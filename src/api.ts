@@ -428,6 +428,27 @@ function thinkingLevelParam(think: boolean | string | undefined) {
   return undefined;
 }
 
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function buildDateContextSystemMessage(): OllamaMessage {
+  const now = new Date();
+  let tz = "UTC";
+  try {
+    tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {}
+  const local = now.toString();
+
+  const content = [
+    `Current date/time: ${now.toISOString()} (timezone: ${tz}; local: ${local}).`,
+    `When using web search or fetched pages, treat recent results (including ${now.getUTCFullYear()}) as potentially real, not automatically fake due to your training cutoff.`,
+  ].join("\n");
+
+  return { role: "system", content } as OllamaMessage;
+}
+
 function buildWebSearchTools(): OllamaTool[] {
   return [
     {
@@ -441,7 +462,7 @@ function buildWebSearchTools(): OllamaTool[] {
             query: { type: "string", description: "Search query string." },
             max_results: {
               type: "number",
-              description: "The maximum number of results to return per query (default 3).",
+              description: "The maximum number of results to return per query (default 5; clamped).",
             },
           },
           required: ["query"],
@@ -600,13 +621,20 @@ export async function* sendMessage(
   })();
 
   const toolCallsEnabled = Boolean(_webSearch) && Boolean(getApiKey());
-  const tools = toolCallsEnabled ? buildWebSearchTools() : undefined;
+  let tools = toolCallsEnabled ? buildWebSearchTools() : undefined;
   const think = thinkingLevelParam(_think);
+
+  let toolLimitSystemNote: string | null = null;
 
   // Convert stored messages to Ollama request messages on each tool loop iteration.
   const buildRequestMessages = () => {
     const storedMessages: any[] = chat.messages || [];
     const converted: OllamaMessage[] = [];
+
+    converted.push(buildDateContextSystemMessage());
+    if (toolLimitSystemNote) {
+      converted.push({ role: "system", content: toolLimitSystemNote } as OllamaMessage);
+    }
 
     for (const m of storedMessages) {
       const gotypesMsg = m instanceof Message ? m : new Message(m);
@@ -618,7 +646,18 @@ export async function* sendMessage(
   };
 
   try {
+    const MAX_TOOL_LOOPS = 4;
+    const MAX_TOOL_CALLS_TOTAL = 10;
+    const MAX_WEB_SEARCH_CALLS = 6;
+    const MAX_WEB_FETCH_CALLS = 6;
+
+    let toolLoopCount = 0;
+    let toolCallsTotal = 0;
+    let webSearchCalls = 0;
+    let webFetchCalls = 0;
+
     while (true) {
+      toolLoopCount += 1;
       let accumulatedContent = "";
       let accumulatedThinking = "";
       let toolCalls: OllamaToolCall[] = [];
@@ -710,6 +749,28 @@ export async function* sendMessage(
       }
 
       if (toolCalls.length > 0) {
+        const wouldExceedLoopLimit = toolLoopCount >= MAX_TOOL_LOOPS;
+        const wouldExceedToolLimit = toolCallsTotal + toolCalls.length > MAX_TOOL_CALLS_TOTAL;
+
+        if (wouldExceedLoopLimit || wouldExceedToolLimit) {
+          const assistant = chat.messages[currentAssistantIndex];
+          if (assistant) {
+            assistant.content = accumulatedContent;
+            assistant.thinking = accumulatedThinking;
+            if (thinkingStart) assistant.thinkingTimeStart = thinkingStart;
+            if (thinkingEnd) assistant.thinkingTimeEnd = thinkingEnd;
+            assistant.updated_at = nowIso();
+          }
+
+          toolLimitSystemNote =
+            `Tool call limits reached; tools are now disabled for this message.\n` +
+            `Do not request more tool calls. Continue and answer with the information already available.\n` +
+            `Limits: maxToolLoops=${MAX_TOOL_LOOPS}, maxToolCallsTotal=${MAX_TOOL_CALLS_TOTAL}.\n` +
+            `Counts: toolLoops=${toolLoopCount}, toolCallsTotal=${toolCallsTotal}.`;
+          tools = undefined;
+          continue;
+        }
+
         const mappedToolCalls = toolCallsToGotypes(toolCalls);
 
         // Overwrite current assistant message in localStorage with tool calls.
@@ -733,17 +794,33 @@ export async function* sendMessage(
 
         // Execute tools and push tool results back into the conversation.
         for (const toolCall of toolCalls) {
+          toolCallsTotal += 1;
           const toolName = toolCall.function.name;
           const args = toolCall.function.arguments as any;
 
           if (toolName === "webSearch" || toolName === "web_search") {
+            webSearchCalls += 1;
+            if (webSearchCalls > MAX_WEB_SEARCH_CALLS) {
+              const toolResultText =
+                `ERROR: webSearch limit reached (max ${MAX_WEB_SEARCH_CALLS}). ` +
+                `Continue without more web searches and answer with what you have.`;
+              chat.messages.push({
+                role: "tool",
+                content: toolResultText,
+                tool_name: toolName,
+                created_at: nowIso(),
+                updated_at: nowIso(),
+              });
+              yield new ChatEvent({
+                eventName: "tool_result",
+                content: toolResultText,
+                toolName,
+              });
+              continue;
+            }
+
             const query = typeof args?.query === "string" ? args.query : "";
-            const max_results =
-              typeof args?.max_results === "number"
-                ? args.max_results
-                : typeof args?.maxResults === "number"
-                  ? args.maxResults
-                  : 5;
+            const max_results = clampInt(args?.max_results ?? args?.maxResults, 1, 10, 5);
 
             let toolResultText = "";
             try {
@@ -771,6 +848,26 @@ export async function* sendMessage(
               toolName,
             });
           } else if (toolName === "webFetch" || toolName === "web_fetch") {
+            webFetchCalls += 1;
+            if (webFetchCalls > MAX_WEB_FETCH_CALLS) {
+              const toolResultText =
+                `ERROR: webFetch limit reached (max ${MAX_WEB_FETCH_CALLS}). ` +
+                `Continue without more page fetches and answer with what you have.`;
+              chat.messages.push({
+                role: "tool",
+                content: toolResultText,
+                tool_name: toolName,
+                created_at: nowIso(),
+                updated_at: nowIso(),
+              });
+              yield new ChatEvent({
+                eventName: "tool_result",
+                content: toolResultText,
+                toolName,
+              });
+              continue;
+            }
+
             const url = typeof args?.url === "string" ? args.url : "";
             let toolResultText = "";
             try {
