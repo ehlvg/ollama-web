@@ -4,11 +4,17 @@ import {
   ChatEvent,
   DownloadEvent,
   ErrorEvent,
+  Message,
   Model,
+  ModelCapabilitiesResponse,
   Settings,
   User,
+  ToolCall,
+  ToolFunction,
 } from "@/gotypes";
-import { getOllamaHost, getApiKey, getOllamaDotComUrl, getCorsProxyUrl } from "./lib/web-config";
+import { Ollama } from "ollama/browser";
+import type { Message as OllamaMessage, Tool as OllamaTool, ToolCall as OllamaToolCall } from "ollama";
+import { getOllamaHost, getApiKey } from "./lib/web-config";
 
 const CHATS_STORAGE_KEY = "ollama_web_chats";
 const SETTINGS_STORAGE_KEY = "ollama_web_settings";
@@ -53,44 +59,18 @@ function base64ToText(base64: string): string {
   }
 }
 
-// Returns how many chars at the end of `text` match the beginning of `tag`
-function partialTagMatchLength(text: string, tag: string): number {
-  for (let len = Math.min(tag.length - 1, text.length); len >= 1; len--) {
-    if (text.endsWith(tag.slice(0, len))) {
-      return len;
-    }
-  }
-  return 0;
-}
-
 function getStoredChats(): Map<string, any> {
   const stored = localStorage.getItem(CHATS_STORAGE_KEY);
-  if (stored) {
-    try {
-      const parsed = JSON.parse(stored);
-      return new Map(Object.entries(parsed));
-    } catch {
-      return new Map();
-    }
+  if (!stored) return new Map();
+  try {
+    return new Map(Object.entries(JSON.parse(stored)));
+  } catch {
+    return new Map();
   }
-  return new Map();
 }
 
 function saveChats(chats: Map<string, any>): void {
-  const obj = Object.fromEntries(chats);
-  localStorage.setItem(CHATS_STORAGE_KEY, JSON.stringify(obj));
-}
-
-function getStoredSettings(): Settings {
-  const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
-  if (stored) {
-    try {
-      return new Settings(JSON.parse(stored));
-    } catch {
-      return getDefaultSettings();
-    }
-  }
-  return getDefaultSettings();
+  localStorage.setItem(CHATS_STORAGE_KEY, JSON.stringify(Object.fromEntries(chats)));
 }
 
 function getDefaultSettings(): Settings {
@@ -113,32 +93,40 @@ function getDefaultSettings(): Settings {
   });
 }
 
-function saveSettingsFn(settings: Settings): void {
+function getStoredSettings(): Settings {
+  const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
+  if (!stored) return getDefaultSettings();
+  try {
+    return new Settings(JSON.parse(stored));
+  } catch {
+    return getDefaultSettings();
+  }
+}
+
+function saveSettings(settings: Settings): void {
   localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
 }
 
-async function fetchWithAuth(
-  url: string,
-  options: RequestInit = {},
-): Promise<Response> {
+function getClients() {
   const apiKey = getApiKey();
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...((options.headers as Record<string, string>) || {}),
-  };
+  const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
 
-  if (apiKey) {
-    headers["Authorization"] = `Bearer ${apiKey}`;
-  }
+  // Same Ollama client can talk to both local server (/api/*) and ollama.com tools
+  // (ollama-js hardcodes https://ollama.com for webSearch/webFetch, but still uses `headers`).
+  const local = new Ollama({
+    host: getOllamaHost(),
+    headers,
+  });
 
-  return fetch(url, { ...options, headers });
+  return { ollama: local };
 }
 
-export type CloudStatusSource = "env" | "config" | "both" | "none";
-export interface CloudStatusResponse {
+export type CloudStatusResponse = {
   disabled: boolean;
-  source: CloudStatusSource;
-}
+  source: "env" | "config" | "both" | "none";
+};
+
+export type ChatEventUnion = ChatEvent | DownloadEvent | ErrorEvent;
 
 export async function fetchUser(): Promise<User | null> {
   return null;
@@ -176,443 +164,114 @@ export async function getChat(chatId: string): Promise<ChatResponse> {
   return new ChatResponse({ chat });
 }
 
-export async function getModels(query?: string): Promise<Model[]> {
-  const host = getOllamaHost();
-  const response = await fetchWithAuth(`${host}/api/tags`);
-  if (!response.ok) {
-    throw new Error(`Failed to list models: ${response.statusText}`);
-  }
-  const data = await response.json();
+function toToolCallsForOllama(toolCalls: ToolCall[] | undefined) {
+  if (!toolCalls || toolCalls.length === 0) return undefined;
+  return toolCalls.map((tc) => {
+    let args: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(tc.function.arguments);
+      if (parsed && typeof parsed === "object") args = parsed as Record<string, unknown>;
+    } catch {}
 
-  let models: Model[] = (data.models || [])
-    .filter((m: any) => {
-      const families = m.details?.families;
-      if (!families || families.length === 0) return true;
-      const isBertOnly = families.every((family: string) =>
-        family.toLowerCase().includes("bert"),
-      );
-      return !isBertOnly;
-    })
-    .map((m: any) => {
-      const modelName = m.name.replace(/:latest$/, "");
-      return new Model({
-        model: modelName,
-        digest: m.digest,
-        modified_at: m.modified_at ? new Date(m.modified_at) : undefined,
-      });
-    });
-
-  if (query) {
-    const normalizedQuery = query.toLowerCase().trim();
-    models = models.filter((m: Model) =>
-      m.model.toLowerCase().includes(normalizedQuery),
-    );
-  }
-
-  return models;
-}
-
-export async function getModelCapabilities(
-  modelName: string,
-): Promise<{ capabilities: string[] }> {
-  const host = getOllamaHost();
-  try {
-    const response = await fetchWithAuth(`${host}/api/show`, {
-      method: "POST",
-      body: JSON.stringify({ model: modelName }),
-    });
-    if (!response.ok) {
-      return { capabilities: [] };
-    }
-    const data = await response.json();
     return {
-      capabilities: Array.isArray(data.capabilities) ? data.capabilities : [],
+      function: {
+        name: tc.function.name,
+        arguments: args,
+      },
     };
-  } catch {
-    return { capabilities: [] };
-  }
+  });
 }
 
-export type ChatEventUnion = ChatEvent | DownloadEvent | ErrorEvent;
+function toolCallToGotypes(toolCalls: OllamaToolCall[]): ToolCall[] {
+  return toolCalls.map((tc) => {
+    return {
+      type: "function",
+      function: new ToolFunction({
+        name: tc.function.name,
+        arguments: JSON.stringify(tc.function.arguments ?? {}),
+      }),
+    } as ToolCall;
+  });
+}
 
-export async function* sendMessage(
-  chatId: string,
-  message: string,
-  model: Model,
-  attachments?: Array<{ filename: string; data: Uint8Array }>,
-  signal?: AbortSignal,
-  _index?: number,
-  _webSearch?: boolean,
-  _fileTools?: boolean,
-  _forceUpdate?: boolean,
-  _think?: boolean | string,
-): AsyncGenerator<ChatEventUnion> {
-  let actualChatId = chatId;
+function extractAttachmentsForOllama(userMsg: Message): {
+  images?: string[];
+  textContent?: string;
+} {
+  const attachments: any[] | undefined = userMsg.attachments as any[] | undefined;
+  if (!attachments || attachments.length === 0) return {};
 
-  if (chatId === "new") {
-    actualChatId = crypto.randomUUID();
-    yield new ChatEvent({ eventName: "chat_created", chatId: actualChatId });
-  }
+  const images: string[] = [];
+  let textContent = "";
 
-  const chats = getStoredChats();
-  let chat = chats.get(actualChatId);
+  for (const att of attachments) {
+    const filename = String(att?.filename ?? "");
+    const data = att?.data;
+    if (!data || !filename) continue;
 
-  if (!chat) {
-    chat = {
-      id: actualChatId,
-      messages: [],
-      title: "",
-      created_at: new Date().toISOString(),
-    };
-  }
-
-  if (!_forceUpdate) {
-    const userMsg = {
-      role: "user",
-      content: message,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      attachments: attachments?.map((a) => ({
-        filename: a.filename,
-        data: uint8ArrayToBase64(a.data),
-      })),
-    };
-
-    if (_index !== undefined && _index >= 0) {
-      chat.messages = chat.messages.slice(0, _index);
-      chat.messages.push(userMsg);
-    } else {
-      chat.messages.push(userMsg);
-    }
-  }
-
-  chat.updated_at = new Date().toISOString();
-  if (!chat.title && message) {
-    chat.title = message.slice(0, 50);
-  }
-
-  chats.set(actualChatId, chat);
-  saveChats(chats);
-
-  const assistantMsg = {
-    role: "assistant",
-    content: "",
-    model: model.model,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-
-  if (!_forceUpdate) {
-    chat.messages.push(assistantMsg);
-    chats.set(actualChatId, chat);
-    saveChats(chats);
-  }
-
-  // For web version, always use local Ollama host
-  // Cloud models with API key will be proxied through local Ollama if configured
-  // Direct calls to ollama.com from browser are blocked by CORS
-  const host = getOllamaHost();
-  const messages: any[] = [];
-
-  for (const msg of chat.messages) {
-    if (msg.role === "assistant" && msg.content === "" && !_forceUpdate) {
+    if (!isImageFilename(filename)) {
+      if (typeof data === "string") {
+        const text = base64ToText(data);
+        if (text) {
+          textContent += `[File: ${filename}]\n${text}\n\n`;
+        }
+      }
       continue;
     }
-    const apiMsg: any = {
-      role: msg.role,
-      content: msg.content || "",
-    };
-    if (msg.attachments && msg.attachments.length > 0) {
-      const imageData: string[] = [];
-      let textContent = "";
 
-      for (const att of msg.attachments as any[]) {
-        const data: string = att.data;
-        if (!data) continue;
-
-        if (isImageFilename(att.filename)) {
-          imageData.push(data);
-        } else {
-          // Decode text files (txt, md, js, ts, etc.) as UTF-8
-          const text = base64ToText(data);
-          if (text) {
-            textContent += `[File: ${att.filename}]\n${text}\n\n`;
-          }
-        }
-      }
-
-      if (imageData.length > 0) {
-        apiMsg.images = imageData;
-      }
-      if (textContent) {
-        apiMsg.content = textContent + (apiMsg.content ? "\n" + apiMsg.content : "");
-      }
+    if (typeof data === "string") {
+      images.push(data);
     }
-    messages.push(apiMsg);
   }
 
-  const webSearchTools = _webSearch && getApiKey()
-    ? [
-        {
-          type: "function",
-          function: {
-            name: "web_search",
-            description: "Search the web for current information",
-            parameters: {
-              type: "object",
-              properties: {
-                query: { type: "string", description: "Search query" },
-              },
-              required: ["query"],
-            },
-          },
-        },
-        {
-          type: "function",
-          function: {
-            name: "web_fetch",
-            description: "Fetch the full content of a web page",
-            parameters: {
-              type: "object",
-              properties: {
-                url: { type: "string", description: "URL to fetch" },
-              },
-              required: ["url"],
-            },
-          },
-        },
-      ]
-    : undefined;
+  return {
+    images: images.length > 0 ? images : undefined,
+    textContent: textContent.length > 0 ? textContent : undefined,
+  };
+}
 
-  try {
-    // Tool-use loop: keep calling until the model stops requesting tools
-    while (true) {
-      const response = await fetchWithAuth(`${host}/api/chat`, {
-        method: "POST",
-        body: JSON.stringify({
-          model: model.model,
-          messages,
-          stream: true,
-          ...(webSearchTools ? { tools: webSearchTools } : {}),
-        }),
-        signal,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Chat failed: ${response.statusText}`);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error("No response body");
-      }
-
-      const decoder = new TextDecoder();
-      let lineBuffer = "";
-      let fullContent = "";
-      let fullThinking = "";
-      let toolCalls: Array<{ function: { name: string; arguments: Record<string, string> } }> = [];
-      let doneReason = "";
-
-      // Think-tag parsing state (for inline <think> tags in message.content)
-      let isInThink = false;
-      let thinkingStart: Date | undefined;
-      let thinkingEnd: Date | undefined;
-      let tagBuffer = "";
-      // Tracks whether we're in Ollama native thinking mode (message.thinking field)
-      let isNativeThinking = false;
-
-      const processLine = (line: string) => {
-        if (!line.trim()) return;
-        try {
-          const data = JSON.parse(line);
-          if (data.message?.tool_calls) {
-            toolCalls = data.message.tool_calls;
-          }
-          if (data.done_reason) {
-            doneReason = data.done_reason;
-          }
-          return data;
-        } catch {
-          return null;
-        }
-      };
-
-      // Sync generator: parses <think>...</think> tags from content chunks
-      const processContent = function*(raw: string): Generator<ChatEvent> {
-        tagBuffer += raw;
-
-        while (tagBuffer.length > 0) {
-          if (isInThink) {
-            const closeTag = "</think>";
-            const idx = tagBuffer.indexOf(closeTag);
-            if (idx === -1) {
-              const partialLen = partialTagMatchLength(tagBuffer, closeTag);
-              const safe = tagBuffer.slice(0, tagBuffer.length - partialLen);
-              if (safe) {
-                fullThinking += safe;
-                yield new ChatEvent({ eventName: "thinking", thinking: safe, thinkingTimeStart: thinkingStart });
-              }
-              tagBuffer = partialLen > 0 ? tagBuffer.slice(tagBuffer.length - partialLen) : "";
-              break;
-            } else {
-              const before = tagBuffer.slice(0, idx);
-              if (before) {
-                fullThinking += before;
-                yield new ChatEvent({ eventName: "thinking", thinking: before, thinkingTimeStart: thinkingStart });
-              }
-              thinkingEnd = new Date();
-              yield new ChatEvent({ eventName: "thinking", thinking: "", thinkingTimeStart: thinkingStart, thinkingTimeEnd: thinkingEnd });
-              isInThink = false;
-              tagBuffer = tagBuffer.slice(idx + closeTag.length);
-            }
-          } else {
-            const openTag = "<think>";
-            const idx = tagBuffer.indexOf(openTag);
-            if (idx === -1) {
-              const partialLen = partialTagMatchLength(tagBuffer, openTag);
-              const safe = tagBuffer.slice(0, tagBuffer.length - partialLen);
-              if (safe) {
-                fullContent += safe;
-                yield new ChatEvent({ eventName: "chat", content: safe });
-              }
-              tagBuffer = partialLen > 0 ? tagBuffer.slice(tagBuffer.length - partialLen) : "";
-              break;
-            } else {
-              const before = tagBuffer.slice(0, idx);
-              if (before) {
-                fullContent += before;
-                yield new ChatEvent({ eventName: "chat", content: before });
-              }
-              isInThink = true;
-              thinkingStart = new Date();
-              yield new ChatEvent({ eventName: "thinking", thinking: "", thinkingTimeStart: thinkingStart });
-              tagBuffer = tagBuffer.slice(idx + openTag.length);
-            }
-          }
-        }
-      };
-
-      const processChunk = function*(data: any): Generator<ChatEvent> {
-        // Handle Ollama native thinking field (message.thinking)
-        if (data.message?.thinking) {
-          if (!isNativeThinking) {
-            isNativeThinking = true;
-            thinkingStart = new Date();
-            yield new ChatEvent({ eventName: "thinking", thinking: "", thinkingTimeStart: thinkingStart });
-          }
-          fullThinking += data.message.thinking;
-          yield new ChatEvent({ eventName: "thinking", thinking: data.message.thinking, thinkingTimeStart: thinkingStart });
-        }
-
-        // Handle content (may contain inline <think> tags)
-        if (data.message?.content) {
-          // End native thinking when regular content arrives
-          if (isNativeThinking) {
-            isNativeThinking = false;
-            thinkingEnd = new Date();
-            yield new ChatEvent({ eventName: "thinking", thinking: "", thinkingTimeStart: thinkingStart, thinkingTimeEnd: thinkingEnd });
-          }
-          yield* processContent(data.message.content);
-        }
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        lineBuffer += decoder.decode(value, { stream: true });
-        const lines = lineBuffer.split("\n");
-        lineBuffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const data = processLine(line);
-          if (data) yield* processChunk(data);
-        }
-      }
-
-      // Process any remaining buffered data
-      if (lineBuffer.trim()) {
-        const data = processLine(lineBuffer);
-        if (data) yield* processChunk(data);
-      }
-
-      // Flush any partial tag that was buffered from processContent
-      if (tagBuffer) {
-        if (isInThink) {
-          fullThinking += tagBuffer;
-          yield new ChatEvent({ eventName: "thinking", thinking: tagBuffer, thinkingTimeStart: thinkingStart, thinkingTimeEnd: new Date() });
-        } else {
-          fullContent += tagBuffer;
-          yield new ChatEvent({ eventName: "chat", content: tagBuffer });
-        }
-        tagBuffer = "";
-      }
-
-      // Close out any open native thinking
-      if (isNativeThinking) {
-        thinkingEnd = new Date();
-        yield new ChatEvent({ eventName: "thinking", thinking: "", thinkingTimeStart: thinkingStart, thinkingTimeEnd: thinkingEnd });
-      }
-
-      if (doneReason === "tool_calls" && toolCalls.length > 0) {
-        // Add the assistant's tool-call turn to messages
-        messages.push({
-          role: "assistant",
-          content: fullContent,
-          tool_calls: toolCalls,
-        });
-
-        // Execute each requested tool and append results
-        for (const toolCall of toolCalls) {
-          let toolResult: string;
-          try {
-            // arguments can be an object or a JSON-encoded string depending on model
-            const args: Record<string, string> =
-              typeof toolCall.function.arguments === "string"
-                ? (() => { try { return JSON.parse(toolCall.function.arguments); } catch { return {}; } })()
-                : (toolCall.function.arguments as Record<string, string>) || {};
-
-            if (toolCall.function.name === "web_search") {
-              const result = await webSearch(args.query);
-              toolResult = result.results
-                .map((r) => `**${r.title}**\n${r.url}\n${r.content}`)
-                .join("\n\n");
-            } else if (toolCall.function.name === "web_fetch") {
-              const result = await webFetch(args.url);
-              toolResult = `**${result.title}**\n${result.content}`;
-            } else {
-              toolResult = `Unknown tool: ${toolCall.function.name}`;
-            }
-          } catch (e) {
-            toolResult = `Tool execution failed: ${e instanceof Error ? e.message : String(e)}`;
-          }
-
-          messages.push({ role: "tool", content: toolResult });
-        }
-        // Continue loop to send tool results back to the model
-      } else {
-        // No more tool calls — save and finish
-        const lastMsg = chat.messages[chat.messages.length - 1];
-        if (lastMsg && lastMsg.role === "assistant") {
-          lastMsg.content = fullContent;
-          lastMsg.thinking = fullThinking;
-          if (thinkingStart) lastMsg.thinkingTimeStart = thinkingStart;
-          if (thinkingEnd) lastMsg.thinkingTimeEnd = thinkingEnd;
-          lastMsg.updated_at = new Date().toISOString();
-        }
-
-        chats.set(actualChatId, chat);
-        saveChats(chats);
-
-        yield new ChatEvent({ eventName: "done" });
-        break;
-      }
-    }
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : "Unknown error";
-    yield new ErrorEvent({ eventName: "error", error: errorMsg });
+function chatMessageToOllamaMessage(msg: Message): OllamaMessage | null {
+  // Skip empty assistant placeholder messages.
+  if (
+    msg.role === "assistant" &&
+    (!msg.content || !msg.content.trim()) &&
+    (!msg.thinking || !msg.thinking.trim()) &&
+    (!msg.tool_calls || msg.tool_calls.length === 0)
+  ) {
+    return null;
   }
+
+  const base: any = {
+    role: msg.role,
+    content: msg.content || "",
+  };
+
+  if (msg.role === "tool") {
+    base.tool_name = msg.tool_name || (msg as any).toolName;
+  }
+
+  if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+    base.tool_calls = toToolCallsForOllama(msg.tool_calls);
+  }
+
+  const attachmentsExtracted =
+    msg.attachments && msg.attachments.length > 0
+      ? extractAttachmentsForOllama(msg)
+      : {};
+
+  if (attachmentsExtracted.images && attachmentsExtracted.images.length > 0) {
+    base.images = attachmentsExtracted.images;
+  }
+
+  if (attachmentsExtracted.textContent) {
+    base.content = attachmentsExtracted.textContent + (base.content ? `\n${base.content}` : "");
+  }
+
+  if (msg.role === "assistant" && msg.thinking) {
+    base.thinking = msg.thinking;
+  }
+
+  return base as OllamaMessage;
 }
 
 export async function getSettings(): Promise<{ settings: Settings }> {
@@ -620,34 +279,34 @@ export async function getSettings(): Promise<{ settings: Settings }> {
   return { settings };
 }
 
-export async function updateSettings(
-  newSettings: Settings,
-): Promise<{ settings: Settings }> {
-  saveSettingsFn(newSettings);
+export async function updateSettings(newSettings: Settings): Promise<{ settings: Settings }> {
+  saveSettings(newSettings);
   return { settings: newSettings };
 }
 
-export async function updateCloudSetting(
-  enabled: boolean,
-): Promise<CloudStatusResponse> {
+export async function updateCloudSetting(enabled: boolean): Promise<CloudStatusResponse> {
   const settings = getStoredSettings();
   settings.TurboEnabled = enabled;
-  saveSettingsFn(settings);
+  saveSettings(settings);
   return { disabled: !enabled, source: "config" };
 }
 
-export async function renameChat(
-  chatId: string,
-  title: string,
-): Promise<void> {
+export async function getCloudStatus(): Promise<CloudStatusResponse | null> {
+  const apiKey = getApiKey();
+  return {
+    disabled: !apiKey,
+    source: "config",
+  };
+}
+
+export async function renameChat(chatId: string, title: string): Promise<void> {
   const chats = getStoredChats();
   const chat = chats.get(chatId);
-  if (chat) {
-    chat.title = title;
-    chat.updated_at = new Date().toISOString();
-    chats.set(chatId, chat);
-    saveChats(chats);
-  }
+  if (!chat) return;
+  chat.title = title;
+  chat.updated_at = new Date().toISOString();
+  chats.set(chatId, chat);
+  saveChats(chats);
 }
 
 export async function deleteChat(chatId: string): Promise<void> {
@@ -672,40 +331,26 @@ export async function* pullModel(
   completed?: number;
   done?: boolean;
 }> {
-  const host = getOllamaHost();
-  const response = await fetchWithAuth(`${host}/api/pull`, {
-    method: "POST",
-    body: JSON.stringify({ name: modelName }),
-    signal,
-  });
+  const { ollama } = getClients();
 
-  if (!response.ok) {
-    throw new Error(`Failed to pull model: ${response.statusText}`);
+  const iteratorOrProgress = await ollama.pull({ model: modelName, stream: true, insecure: false } as any);
+  const itr = iteratorOrProgress as any;
+  if (signal) {
+    const abort = () => itr.abort();
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
   }
 
-  const reader = response.body?.getReader();
-  if (!reader) return;
-
-  const decoder = new TextDecoder();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    const text = decoder.decode(value);
-    const lines = text.split("\n").filter(Boolean);
-
-    for (const line of lines) {
-      try {
-        const data = JSON.parse(line);
-        yield {
-          status: data.status || "",
-          digest: data.digest,
-          total: data.total,
-          completed: data.completed,
-          done: data.status === "success",
-        };
-      } catch {}
-    }
+  for await (const part of itr as any) {
+    const isDone = (part as any)?.status === "success";
+    yield {
+      status: part.status,
+      digest: part.digest,
+      total: part.total,
+      completed: part.completed,
+      done: isDone,
+    };
+    if (isDone) break;
   }
 }
 
@@ -715,162 +360,452 @@ export async function getInferenceCompute(): Promise<{
 }> {
   return {
     inferenceComputes: [],
-    defaultContextLength: 4096,
+    defaultContextLength: getStoredSettings().ContextLength || 4096,
   };
 }
 
 export async function fetchHealth(): Promise<boolean> {
   try {
-    const host = getOllamaHost();
-    const response = await fetchWithAuth(`${host}/api/version`);
-    return response.ok;
+    const { ollama } = getClients();
+    const res = await ollama.version();
+    return Boolean(res?.version);
   } catch {
     return false;
   }
 }
 
-export async function getCloudStatus(): Promise<CloudStatusResponse | null> {
-  // For web version, cloud is enabled if API key is set
-  const apiKey = getApiKey();
-  return {
-    disabled: !apiKey,
-    source: "config",
-  };
-}
+export async function getModels(query?: string): Promise<Model[]> {
+  const { ollama } = getClients();
+  const data = await ollama.list();
 
-export async function webSearch(query: string, maxResults: number = 5): Promise<{
-  results: Array<{ title: string; url: string; content: string }>;
-}> {
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    throw new Error("API key required for web search. Set it in Settings.");
-  }
-
-  const corsProxy = getCorsProxyUrl();
-  const baseUrl = getOllamaDotComUrl();
-  
-  let fetchUrl: string;
-  let headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${apiKey}`,
-  };
-  
-  if (corsProxy) {
-    // local-cors-proxy: http://localhost:8080 proxies to target directly
-    // so requests go to http://localhost:8080/web_search (not full URL)
-    // Other proxies like cors-anywhere append full URL
-    if (corsProxy.includes("localhost") || corsProxy.includes("127.0.0.1")) {
-      // Local proxy - just use the endpoint path
-      fetchUrl = `${corsProxy.replace(/\/$/, '')}/web_search`;
-    } else if (corsProxy.includes("allorigins") || corsProxy.includes("?url=")) {
-      // URL-encoded format for proxies that need full URL encoded
-      const targetUrl = `${baseUrl}/api/web_search`;
-      fetchUrl = `${corsProxy}${encodeURIComponent(targetUrl)}`;
-      if (corsProxy.includes("allorigins")) {
-        headers = { "Content-Type": "application/json" };
-      }
-    } else {
-      // cors-anywhere style - full URL appended
-      fetchUrl = `${corsProxy.replace(/\/$/, '')}/${baseUrl}/api/web_search`;
-    }
-  } else {
-    fetchUrl = `${baseUrl}/api/web_search`;
-  }
-  
-  let response: Response;
-  try {
-    response = await fetch(fetchUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        query,
-        max_results: maxResults,
-      }),
+  let models: Model[] = (data.models || [])
+    .filter((m: any) => {
+      const families = m.details?.families;
+      if (!families || families.length === 0) return true;
+      const isBertOnly = families.every((family: string) =>
+        family.toLowerCase().includes("bert"),
+      );
+      return !isBertOnly;
+    })
+    .map((m: any) => {
+      const modelName = String(m.name).replace(/:latest$/, "");
+      return new Model({
+        model: modelName,
+        digest: m.digest,
+        modified_at: m.modified_at ? new Date(m.modified_at) : undefined,
+      });
     });
-  } catch (fetchError) {
-    throw new Error(`Web search failed: ${fetchError instanceof Error ? fetchError.message : 'Network error'}. Check if proxy is running.`);
+
+  if (query) {
+    const normalizedQuery = query.toLowerCase().trim();
+    models = models.filter((m: Model) => m.model.toLowerCase().includes(normalizedQuery));
   }
 
-  if (!response.ok) {
-    if (response.status === 403) {
-      throw new Error("CORS proxy access forbidden. Visit the proxy URL in your browser to enable temporary access, or use a different proxy.");
-    }
-    if (response.status === 404) {
-      throw new Error("Web search endpoint not found (404). Make sure local-cors-proxy is running with: npx local-cors-proxy --proxyUrl https://ollama.com/api/ --port 8080");
-    }
-    if (response.status === 0 || response.type === "opaque") {
-      throw new Error("Web search failed: CORS blocked. Configure a CORS proxy in Settings.");
-    }
-    const errorText = await response.text().catch(() => response.statusText);
-    throw new Error(`Web search failed (${response.status}): ${errorText.slice(0, 100)}`);
-  }
+  return models;
+}
 
-  let data: any;
+export async function getModelCapabilities(
+  modelName: string,
+): Promise<ModelCapabilitiesResponse> {
+  const { ollama } = getClients();
   try {
-    data = await response.json();
+    const data = await ollama.show({ model: modelName });
+    return new ModelCapabilitiesResponse({
+      capabilities: Array.isArray(data.capabilities) ? data.capabilities : [],
+    });
   } catch {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Invalid response from web search. ${text.slice(0, 100) || 'Not JSON.'}`);
+    return new ModelCapabilitiesResponse({ capabilities: [] });
   }
-
-  if (!data.results || !Array.isArray(data.results)) {
-    throw new Error(`Unexpected response format from web search.`);
-  }
-
-  return data;
 }
 
-export async function webFetch(url: string): Promise<{
-  title: string;
-  content: string;
-  links: string[];
-}> {
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    throw new Error("API key required for web fetch");
+function thinkingLevelParam(think: boolean | string | undefined) {
+  if (think === undefined || think === null || think === false) return undefined;
+  if (think === true) return true;
+  if (typeof think === "string") {
+    const normalized = think.toLowerCase();
+    if (normalized === "low" || normalized === "medium" || normalized === "high") return normalized;
+  }
+  return undefined;
+}
+
+function buildWebSearchTools(): OllamaTool[] {
+  return [
+    {
+      type: "function",
+      function: {
+        name: "web_search",
+        description: "Search the web for current information",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Search query" },
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "web_fetch",
+        description: "Fetch the full content of a web page",
+        parameters: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "URL to fetch" },
+          },
+          required: ["url"],
+        },
+      },
+    },
+  ] as any;
+}
+
+function deltaFrom(acc: string, next: string) {
+  if (!acc) return next;
+  if (next.startsWith(acc)) return next.slice(acc.length);
+  return next;
+}
+
+export async function* sendMessage(
+  chatId: string,
+  message: string,
+  model: Model,
+  attachments?: Array<{ filename: string; data: Uint8Array }>,
+  signal?: AbortSignal,
+  _index?: number,
+  _webSearch?: boolean,
+  _fileTools?: boolean,
+  _forceUpdate?: boolean,
+  _think?: boolean | string,
+): AsyncGenerator<ChatEventUnion> {
+  const { ollama } = getClients();
+  const { ContextLength } = getStoredSettings();
+
+  let actualChatId = chatId;
+  if (chatId === "new") {
+    actualChatId = crypto.randomUUID();
+    yield new ChatEvent({ eventName: "chat_created", chatId: actualChatId });
   }
 
-  const corsProxy = getCorsProxyUrl();
-  const baseUrl = getOllamaDotComUrl();
-  
-  let fetchUrl: string;
-  let headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${apiKey}`,
-  };
-  
-  if (corsProxy) {
-    if (corsProxy.includes("localhost") || corsProxy.includes("127.0.0.1")) {
-      // Local proxy - just use the endpoint path
-      fetchUrl = `${corsProxy.replace(/\/$/, '')}/web_fetch`;
-    } else if (corsProxy.includes("allorigins") || corsProxy.includes("?url=")) {
-      const targetUrl = `${baseUrl}/api/web_fetch`;
-      fetchUrl = `${corsProxy}${encodeURIComponent(targetUrl)}`;
-      if (corsProxy.includes("allorigins")) {
-        headers = { "Content-Type": "application/json" };
-      }
+  const chats = getStoredChats();
+  let chat = chats.get(actualChatId);
+  if (!chat) {
+    chat = {
+      id: actualChatId,
+      messages: [],
+      title: "",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  const nowIso = () => new Date().toISOString();
+
+  if (!_forceUpdate) {
+    const userMsg = {
+      role: "user",
+      content: message,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+      attachments: attachments?.map((a) => ({
+        filename: a.filename,
+        data: uint8ArrayToBase64(a.data),
+      })),
+    };
+
+    if (_index !== undefined && _index >= 0) {
+      chat.messages = chat.messages.slice(0, _index);
+      chat.messages.push(userMsg);
     } else {
-      fetchUrl = `${corsProxy.replace(/\/$/, '')}/${baseUrl}/api/web_fetch`;
+      chat.messages.push(userMsg);
     }
+
+    if (!chat.title && message) {
+      chat.title = message.slice(0, 50);
+    }
+
+    // Placeholder assistant message. We'll overwrite it after streaming finishes.
+    const assistantMsg = {
+      role: "assistant",
+      content: "",
+      thinking: "",
+      model: model.model,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+      stream: false,
+    };
+    chat.messages.push(assistantMsg);
   } else {
-    fetchUrl = `${baseUrl}/api/web_fetch`;
+    // Regenerate: reuse the last assistant message.
+    if (!chat.messages || chat.messages.length === 0) {
+      chat.messages = [
+        {
+          role: "assistant",
+          content: "",
+          thinking: "",
+          model: model.model,
+          created_at: nowIso(),
+          updated_at: nowIso(),
+          stream: false,
+        },
+      ];
+    }
   }
 
-  const response = await fetch(fetchUrl, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ url }),
-  });
+  chat.updated_at = nowIso();
+  chats.set(actualChatId, chat);
+  saveChats(chats);
 
-  if (!response.ok) {
-    if (response.status === 403) {
-      throw new Error("CORS proxy forbidden. Visit the proxy site to enable temporary access, or use a different proxy.");
+  // Identify the current assistant message index we will overwrite.
+  let currentAssistantIndex = (() => {
+    for (let i = chat.messages.length - 1; i >= 0; i--) {
+      if (chat.messages[i]?.role === "assistant") return i;
     }
-    if (response.status === 0 || response.type === "opaque") {
-      throw new Error("Web fetch failed: CORS error. Configure a CORS proxy in Settings.");
+    return chat.messages.length - 1;
+  })();
+
+  const toolCallsEnabled = Boolean(_webSearch) && Boolean(getApiKey());
+  const tools = toolCallsEnabled ? buildWebSearchTools() : undefined;
+  const think = thinkingLevelParam(_think);
+
+  // Convert stored messages to Ollama request messages on each tool loop iteration.
+  const buildRequestMessages = () => {
+    const storedMessages: any[] = chat.messages || [];
+    const converted: OllamaMessage[] = [];
+
+    for (const m of storedMessages) {
+      const gotypesMsg = m instanceof Message ? m : new Message(m);
+      const ollamaMsg = chatMessageToOllamaMessage(gotypesMsg);
+      if (ollamaMsg) converted.push(ollamaMsg);
     }
-    throw new Error(`Web fetch failed: ${response.statusText}`);
+
+    return converted;
+  };
+
+  try {
+    while (true) {
+      let accumulatedContent = "";
+      let accumulatedThinking = "";
+      let toolCalls: OllamaToolCall[] = [];
+      let doneReason = "";
+
+      let thinkingStart: Date | undefined;
+      let thinkingEnd: Date | undefined;
+      let sawThinking = false;
+      let sawContent = false;
+
+      const responseStream = (await ollama.chat({
+        model: model.model,
+        messages: buildRequestMessages(),
+        stream: true,
+        tools,
+        think,
+        options: {
+          num_ctx: ContextLength,
+        } as any,
+      } as any)) as any;
+
+      if (signal) {
+        const abort = () => responseStream.abort();
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      }
+
+      for await (const part of responseStream as any) {
+        const msg = part.message as any;
+        if (msg?.thinking !== undefined && typeof msg.thinking === "string") {
+          const delta = deltaFrom(accumulatedThinking, msg.thinking);
+          if (delta) {
+            if (!sawThinking) {
+              sawThinking = true;
+              thinkingStart = new Date();
+              yield new ChatEvent({
+                eventName: "thinking",
+                thinking: delta,
+                thinkingTimeStart: thinkingStart,
+              });
+            } else {
+              yield new ChatEvent({
+                eventName: "thinking",
+                thinking: delta,
+              });
+            }
+            accumulatedThinking += delta;
+          }
+        }
+
+        if (msg?.content !== undefined && typeof msg.content === "string" && msg.content) {
+          const delta = deltaFrom(accumulatedContent, msg.content);
+          if (delta) {
+            if (!sawContent) sawContent = true;
+            if (sawThinking && thinkingEnd === undefined && (!msg.thinking || msg.thinking.length === 0)) {
+              thinkingEnd = new Date();
+              yield new ChatEvent({
+                eventName: "thinking",
+                thinking: "",
+                thinkingTimeStart: thinkingStart,
+                thinkingTimeEnd: thinkingEnd,
+              });
+            }
+
+            yield new ChatEvent({
+              eventName: "chat",
+              content: delta,
+            });
+            accumulatedContent += delta;
+          }
+        }
+
+        if (part.done) {
+          doneReason = String(part.done_reason ?? "");
+          if (msg?.tool_calls && Array.isArray(msg.tool_calls)) {
+            toolCalls = msg.tool_calls as OllamaToolCall[];
+          }
+        }
+      }
+
+      // close thinking if server provided only thinking (no subsequent content)
+      if (sawThinking && thinkingEnd === undefined) {
+        thinkingEnd = new Date();
+        yield new ChatEvent({
+          eventName: "thinking",
+          thinking: "",
+          thinkingTimeStart: thinkingStart,
+          thinkingTimeEnd: thinkingEnd,
+        });
+      }
+
+      if (doneReason === "tool_calls" && toolCalls.length > 0) {
+        const mappedToolCalls = toolCallsToGotypes(toolCalls);
+
+        // Overwrite current assistant message in localStorage with tool calls.
+        const assistant = chat.messages[currentAssistantIndex];
+        if (assistant) {
+          assistant.content = accumulatedContent;
+          assistant.thinking = accumulatedThinking;
+          assistant.tool_calls = mappedToolCalls;
+          if (thinkingStart) assistant.thinkingTimeStart = thinkingStart;
+          if (thinkingEnd) assistant.thinkingTimeEnd = thinkingEnd;
+          assistant.updated_at = nowIso();
+        }
+
+        // Update query state: tool call UI.
+        yield new ChatEvent({
+          eventName: "assistant_with_tools",
+          toolCalls: mappedToolCalls,
+          thinkingTimeStart: thinkingStart,
+          thinkingTimeEnd: thinkingEnd,
+        });
+
+        // Execute tools and push tool results back into the conversation.
+        for (const toolCall of toolCalls) {
+          const toolName = toolCall.function.name;
+          const args = toolCall.function.arguments as any;
+
+          if (toolName === "web_search") {
+            const query = typeof args?.query === "string" ? args.query : "";
+            const maxResults =
+              typeof args?.max_results === "number"
+                ? args.max_results
+                : typeof args?.maxResults === "number"
+                  ? args.maxResults
+                  : 5;
+
+            const web = await ollama.webSearch({ query, maxResults } as any);
+            const toolResultText = (web.results || []).map((r: any) => r.content || "").filter(Boolean).join("\n\n");
+
+            chat.messages.push({
+              role: "tool",
+              content: toolResultText,
+              tool_name: toolName,
+              created_at: nowIso(),
+              updated_at: nowIso(),
+            });
+
+            yield new ChatEvent({
+              eventName: "tool_result",
+              content: toolResultText,
+              toolName,
+            });
+          } else if (toolName === "web_fetch") {
+            const url = typeof args?.url === "string" ? args.url : "";
+            const web = await ollama.webFetch({ url } as any);
+            const links = Array.isArray(web.links) && web.links.length > 0 ? `\n\nLinks:\n${web.links.map((l: string) => `- ${l}`).join("\n")}` : "";
+            const toolResultText = `**${web.title || "Fetched page"}**\n\n${web.content || ""}${links}`;
+
+            chat.messages.push({
+              role: "tool",
+              content: toolResultText,
+              tool_name: toolName,
+              created_at: nowIso(),
+              updated_at: nowIso(),
+            });
+
+            yield new ChatEvent({
+              eventName: "tool_result",
+              content: toolResultText,
+              toolName,
+            });
+          } else {
+            const toolResultText = `Unknown tool: ${toolName}`;
+
+            chat.messages.push({
+              role: "tool",
+              content: toolResultText,
+              tool_name: toolName,
+              created_at: nowIso(),
+              updated_at: nowIso(),
+            });
+
+            yield new ChatEvent({
+              eventName: "tool_result",
+              content: toolResultText,
+              toolName,
+            });
+          }
+        }
+
+        // Append a new assistant placeholder for the model's next response.
+        chat.messages.push({
+          role: "assistant",
+          content: "",
+          thinking: "",
+          model: model.model,
+          created_at: nowIso(),
+          updated_at: nowIso(),
+          stream: false,
+        });
+        currentAssistantIndex = chat.messages.length - 1;
+
+        chats.set(actualChatId, chat);
+        saveChats(chats);
+        continue;
+      }
+
+      // Stop: overwrite current assistant message with final content.
+      const assistant = chat.messages[currentAssistantIndex];
+      if (assistant) {
+        assistant.content = accumulatedContent;
+        assistant.thinking = accumulatedThinking;
+        if (thinkingStart) assistant.thinkingTimeStart = thinkingStart;
+        if (thinkingEnd) assistant.thinkingTimeEnd = thinkingEnd;
+        assistant.updated_at = nowIso();
+      }
+
+      chats.set(actualChatId, chat);
+      saveChats(chats);
+
+      yield new ChatEvent({ eventName: "done" });
+      break;
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : "Unknown error";
+    yield new ErrorEvent({ eventName: "error", error: errorMsg });
   }
-
-  return response.json();
 }
+
+function toolCallsToGotypes(toolCalls: OllamaToolCall[]): ToolCall[] {
+  return toolCallToGotypes(toolCalls);
+}
+
