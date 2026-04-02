@@ -19,14 +19,52 @@ function getRuntimeConfig(): RuntimeConfig {
   return cfg;
 }
 
+function normalizeOllamaHost(rawHost: string): string {
+  const trimmed = rawHost.trim();
+  if (!trimmed) return trimmed;
+
+  // Allow config like "/ollama" and normalize to absolute same-origin URL.
+  // The ollama-js client expects an absolute base URL.
+  if (trimmed.startsWith("/") && typeof window !== "undefined") {
+    try {
+      return new URL(trimmed.replace(/\/+$/, ""), window.location.origin).toString();
+    } catch {
+      return trimmed;
+    }
+  }
+
+  return trimmed;
+}
+
 export function getOllamaHost(): string {
   const stored = localStorage.getItem("ollama_host");
-  if (stored) return stored;
+  if (stored) {
+    // Avoid mixed-content failures when the UI is served over HTTPS.
+    // If the user previously saved a docker-internal or loopback HTTP host,
+    // prefer the same-origin reverse proxy instead.
+    if (typeof window !== "undefined" && window.location?.protocol === "https:") {
+      const trimmed = stored.trim();
+      if (trimmed.startsWith("http://")) {
+        try {
+          const u = new URL(trimmed);
+          const isLocalish =
+            u.hostname === "localhost" ||
+            u.hostname === "127.0.0.1" ||
+            u.hostname === "0.0.0.0" ||
+            u.hostname === "ollama";
+          if (isLocalish) return "/ollama";
+        } catch {
+          return "/ollama";
+        }
+      }
+    }
+    return normalizeOllamaHost(stored);
+  }
 
   const runtime = getRuntimeConfig().ollamaHost;
-  if (runtime && typeof runtime === "string") return runtime;
+  if (runtime && typeof runtime === "string") return normalizeOllamaHost(runtime);
 
-  return DEFAULT_OLLAMA_HOST;
+  return normalizeOllamaHost(DEFAULT_OLLAMA_HOST);
 }
 
 export function setOllamaHost(host: string): void {

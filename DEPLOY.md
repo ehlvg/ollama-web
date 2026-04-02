@@ -81,15 +81,15 @@ docker compose exec ollama ollama list
 
 Если вы хотите `https://chat.example.com`:
 
-1) Запускайте docker compose без публикации порта наружу (или оставьте как есть).
-2) Поставьте Caddy на хост.
-3) Проксируйте домен на `localhost:8085`.
+1. Запускайте docker compose без публикации порта наружу (или оставьте как есть).
+2. Поставьте Caddy на хост.
+3. Проксируйте домен на `localhost:8085`.
 
 Пример `Caddyfile`:
 
 ```caddyfile
 chat.example.com {
-  encode gzip zstd
+  f
   reverse_proxy 127.0.0.1:8085
 }
 ```
@@ -142,5 +142,4 @@ docker compose up -d --pull always
 ### Доступ к Ollama “напрямую” из интернета
 
 В этом деплое Ollama **не публикуется** отдельным портом наружу.
-Доступ идёт только через `web` и путь `/ollama/*`.
-
+Доступ идёт только через `web` и путь `/ollama/`*.
