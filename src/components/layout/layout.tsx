@@ -13,9 +13,9 @@ export function SidebarLayout({
   const isWindows = navigator.platform.toLowerCase().includes("win");
 
   return (
-    <div className={`flex transition-[width] duration-300 dark:bg-neutral-900`}>
+    <div className={`relative flex transition-[width] duration-300 dark:bg-neutral-900`}>
       <div
-        className={`absolute flex mx-2 py-2 z-20 items-center transition-[left] duration-375 text-neutral-500 dark:text-neutral-400 ${settings.sidebarOpen ? (isWindows ? "left-2" : "left-[204px]") : isWindows ? "left-2" : "left-20"}`}
+        className={`absolute flex mx-2 py-2 z-[60] items-center pointer-events-auto transition-[left] duration-375 text-neutral-500 dark:text-neutral-400 left-2 xl:${settings.sidebarOpen ? (isWindows ? "left-2" : "left-[204px]") : isWindows ? "left-2" : "left-20"}`}
       >
         <button
           onClick={() => setSettings({ SidebarOpen: !settings.sidebarOpen })}
@@ -43,7 +43,7 @@ export function SidebarLayout({
             settings.sidebarOpen
               ? "opacity-0 pointer-events-none"
               : "opacity-100"
-          }`}
+          } xl:hidden`}
         >
           <svg
             className="h-5 w-5 fill-current"
@@ -56,21 +56,44 @@ export function SidebarLayout({
           </svg>
         </Link>
       </div>
-      <div
-        className={`flex flex-col transition-[width] duration-300 max-h-screen ${settings.sidebarOpen ? "w-64" : "w-0"}`}
+
+      {settings.sidebarOpen && (
+        <button
+          type="button"
+          aria-label="Close sidebar"
+          onClick={() => setSettings({ SidebarOpen: false })}
+          className="fixed inset-0 z-40 bg-black/25 backdrop-blur-[1px] xl:hidden"
+        />
+      )}
+
+      <aside
+        className={[
+          "z-50 max-h-screen",
+          "fixed inset-y-0 left-0 w-72 border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900",
+          "transition-transform duration-300",
+          settings.sidebarOpen ? "translate-x-0" : "-translate-x-full",
+          "xl:static xl:translate-x-0 xl:border-r-0 xl:bg-transparent xl:dark:bg-transparent",
+          "xl:transition-[width] xl:duration-300 xl:ease-in-out xl:will-change-[width]",
+          settings.sidebarOpen
+            ? "xl:w-64"
+            : "xl:w-0 xl:overflow-hidden xl:pointer-events-none",
+        ].join(" ")}
       >
         <div
           onDoubleClick={() => window.doubleClick && window.doubleClick()}
           onMouseDown={() => window.drag && window.drag()}
-          className="flex-none h-13 w-full"
-        ></div>
-        {settings.sidebarOpen && sidebar}
-      </div>
+          className="flex-none h-13 w-full xl:w-64 xl:pointer-events-none"
+        />
+        <div className="h-[calc(100vh-52px)] xl:h-auto">
+          {sidebar}
+        </div>
+      </aside>
+
       <main
         className={`flex flex-1 flex-col min-w-0 transition-all duration-300`}
       >
         <div
-          className={`h-13 flex-none w-full z-10 flex items-center bg-white dark:bg-neutral-900 ${isWindows ? "xl:hidden" : "xl:fixed xl:bg-transparent xl:dark:bg-transparent"}`}
+          className={`h-13 flex-none w-full z-10 flex items-center bg-white dark:bg-neutral-900 ${isWindows ? "xl:hidden" : "xl:fixed xl:bg-transparent xl:dark:bg-transparent xl:pointer-events-none"}`}
           onDoubleClick={() => window.doubleClick && window.doubleClick()}
           onMouseDown={() => window.drag && window.drag()}
         ></div>

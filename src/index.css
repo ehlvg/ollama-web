@@ -2,6 +2,8 @@
 @plugin "@tailwindcss/typography";
 @import "katex/dist/katex.min.css";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
   --font-rounded:

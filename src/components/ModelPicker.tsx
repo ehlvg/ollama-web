@@ -6,6 +6,7 @@ import {
   type JSX,
   useImperativeHandle,
 } from "react";
+import { createPortal } from "react-dom";
 import { Model } from "@/gotypes";
 import { useSelectedModel } from "@/hooks/useSelectedModel";
 import { useCloudStatus } from "@/hooks/useCloudStatus";
@@ -29,6 +30,7 @@ export const ModelPicker = forwardRef<
   ref,
 ): JSX.Element {
   const [isOpen, setIsOpen] = useState(false);
+  const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const { selectedModel, setSettings, models, loading } = useSelectedModel(
     chatId,
@@ -42,6 +44,19 @@ export const ModelPicker = forwardRef<
     scrollToSelectedModel: () => void;
     scrollToTop: () => void;
   }>(null);
+  const sheetSearchInputRef = useRef<HTMLInputElement>(null);
+  const [isMobile, setIsMobile] = useState(false);
+  const [sheetTranslateY, setSheetTranslateY] = useState(0);
+  const [isSheetMounted, setIsSheetMounted] = useState(false);
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const [sheetHeight, setSheetHeight] = useState<number>(640);
+  const [backdropOpacity, setBackdropOpacity] = useState(0);
+  const [isSheetAnimating, setIsSheetAnimating] = useState(false);
+  const [isSheetTransitionEnabled, setIsSheetTransitionEnabled] = useState(false);
+  const isDraggingRef = useRef(false);
+  const dragStartYRef = useRef<number | null>(null);
+  const dragLastYRef = useRef<number | null>(null);
+  const dragLastTimeRef = useRef<number>(0);
 
   const checkModelStaleness = async (model: Model) => {
     if (
@@ -75,6 +90,14 @@ export const ModelPicker = forwardRef<
   };
 
   useEffect(() => {
+    const mq = window.matchMedia("(max-width: 639px)");
+    const sync = () => setIsMobile(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (
         dropdownRef.current &&
@@ -83,9 +106,12 @@ export const ModelPicker = forwardRef<
         setIsOpen(false);
       }
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+    if (!isMobile) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+    return;
+  }, [isMobile]);
 
   useEffect(() => {
     if (ref && typeof ref === "object" && ref.current) {
@@ -104,6 +130,56 @@ export const ModelPicker = forwardRef<
     }
   }, [isOpen]);
 
+  useEffect(() => {
+    if (isMobileOpen) {
+      setIsSheetMounted(true);
+      sheetSearchInputRef.current?.focus();
+      modelListRef.current?.scrollToSelectedModel();
+      const prev = document.documentElement.style.overflow;
+      document.documentElement.style.overflow = "hidden";
+      return () => {
+        document.documentElement.style.overflow = prev;
+      };
+    }
+  }, [isMobileOpen]);
+
+  useEffect(() => {
+    if (!isSheetMounted) return;
+
+    const measure = () => {
+      const h = sheetRef.current?.getBoundingClientRect().height;
+      if (h && Number.isFinite(h)) {
+        setSheetHeight(h);
+        return h;
+      }
+      return sheetHeight;
+    };
+
+    const h = measure();
+    setIsSheetAnimating(true);
+    setIsSheetTransitionEnabled(false);
+    setSheetTranslateY(h);
+    setBackdropOpacity(0);
+
+    const id = window.requestAnimationFrame(() => {
+      setIsSheetTransitionEnabled(true);
+      setSheetTranslateY(0);
+      setBackdropOpacity(1);
+    });
+
+    return () => window.cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSheetMounted]);
+
+  const closeMobileSheet = () => {
+    if (!isSheetMounted) return;
+    setIsSheetAnimating(true);
+    setIsSheetTransitionEnabled(true);
+    setIsMobileOpen(false);
+    setSheetTranslateY(sheetHeight);
+    setBackdropOpacity(0);
+  };
+
   // When searching, scroll to top of list
   useEffect(() => {
     if (searchQuery && modelListRef.current) {
@@ -119,11 +195,16 @@ export const ModelPicker = forwardRef<
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (!isOpen) return;
+      if (!isOpen && !isMobileOpen) return;
 
       if (event.key === "Escape") {
         event.preventDefault();
         setIsOpen(false);
+        if (isMobileOpen) {
+          closeMobileSheet();
+        } else {
+          setIsMobileOpen(false);
+        }
         onEscape?.();
         return;
       }
@@ -131,11 +212,12 @@ export const ModelPicker = forwardRef<
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onEscape]);
+  }, [isOpen, isMobileOpen, onEscape]);
 
   const handleModelSelect = (model: Model) => {
     setSettings({ SelectedModel: model.model });
     setIsOpen(false);
+    if (isMobileOpen) closeMobileSheet();
     onModelSelect?.();
   };
 
@@ -146,6 +228,17 @@ export const ModelPicker = forwardRef<
         type="button"
         title="Select model"
         onClick={() => {
+          if (isMobile) {
+            const willOpen = !isMobileOpen;
+            if (willOpen) {
+              setIsMobileOpen(true);
+              onDropdownToggle?.(true);
+            } else {
+              closeMobileSheet();
+              onDropdownToggle?.(false);
+            }
+            return;
+          }
           const newState = !isOpen;
           setIsOpen(newState);
           onDropdownToggle?.(newState);
@@ -153,6 +246,17 @@ export const ModelPicker = forwardRef<
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
+            if (isMobile) {
+              const willOpen = !isMobileOpen;
+              if (willOpen) {
+                setIsMobileOpen(true);
+                onDropdownToggle?.(true);
+              } else {
+                closeMobileSheet();
+                onDropdownToggle?.(false);
+              }
+              return;
+            }
             const newState = !isOpen;
             setIsOpen(newState);
             onDropdownToggle?.(newState);
@@ -160,17 +264,13 @@ export const ModelPicker = forwardRef<
         }}
         onMouseDown={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}
-        className="flex items-center select-none gap-1.5 rounded-full px-3.5 py-1.5 bg-white dark:bg-neutral-700 text-neutral-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-neutral-100 cursor-pointer"
+        className="flex w-full min-w-0 items-center justify-between select-none gap-2 rounded-full px-3.5 py-1.5 bg-white dark:bg-neutral-700 text-neutral-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-neutral-100 cursor-pointer"
       >
-        <div className="flex items-center gap-2">
-          <span>
-            {isDisabled
-              ? "Loading..."
-              : selectedModel?.model || "Select a model"}
-          </span>
-        </div>
+        <span className="truncate min-w-0">
+          {isDisabled ? "Loading..." : selectedModel?.model || "Select a model"}
+        </span>
         <svg
-          className="h-3 w-3 opacity-70"
+          className="h-3 w-3 opacity-70 shrink-0"
           fill="none"
           stroke="currentColor"
           strokeWidth="2"
@@ -183,8 +283,8 @@ export const ModelPicker = forwardRef<
           />
         </svg>
       </button>
-      {isOpen && (
-        <div className="absolute right-0 text-[15px] bottom-full mb-2 z-50 w-64 rounded-2xl overflow-hidden bg-white border border-neutral-100 text-neutral-800 shadow-xl shadow-black/5 backdrop-blur-lg dark:border-neutral-600/40 dark:bg-neutral-800 dark:text-white dark:ring-black/20">
+      {!isMobile && isOpen && (
+        <div className="absolute right-0 text-[15px] bottom-full mb-2 z-50 w-[min(24rem,calc(100vw-1.5rem))] rounded-2xl overflow-hidden bg-white border border-neutral-100 text-neutral-800 shadow-xl shadow-black/5 backdrop-blur-lg dark:border-neutral-600/40 dark:bg-neutral-800 dark:text-white dark:ring-black/20">
           <div className="px-1 py-2 border-b border-neutral-100 dark:border-neutral-700">
             <input
               ref={searchInputRef}
@@ -207,6 +307,130 @@ export const ModelPicker = forwardRef<
           />
         </div>
       )}
+
+      {isMobile &&
+        isSheetMounted &&
+        createPortal(
+          <div className="fixed inset-0 z-50">
+            <button
+              type="button"
+              aria-label="Close model picker"
+              className="absolute inset-0 bg-black/40"
+              style={{ opacity: backdropOpacity }}
+              onClick={() => {
+                closeMobileSheet();
+                onDropdownToggle?.(false);
+              }}
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              ref={sheetRef}
+              className="absolute inset-x-0 bottom-0 rounded-t-3xl border border-neutral-200 bg-white text-neutral-900 shadow-2xl dark:border-neutral-700 dark:bg-neutral-900 dark:text-white"
+              style={{
+                transform: `translateY(${sheetTranslateY}px)`,
+                transition:
+                  isSheetTransitionEnabled && !isDraggingRef.current
+                    ? "transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1)"
+                    : "none",
+                paddingBottom: "calc(env(safe-area-inset-bottom) + 0.5rem)",
+              }}
+              onTransitionEnd={(e) => {
+                if (e.propertyName !== "transform") return;
+                if (!isSheetAnimating) return;
+                setIsSheetAnimating(false);
+                if (sheetTranslateY >= sheetHeight - 1) {
+                  setIsSheetMounted(false);
+                  setSheetTranslateY(0);
+                  setBackdropOpacity(0);
+                  setIsSheetTransitionEnabled(false);
+                }
+              }}
+            >
+              <div
+                className="flex items-center justify-center pt-3 pb-2"
+                style={{ touchAction: "none" }}
+                onTouchStart={(e) => {
+                  const y = e.touches[0]?.clientY;
+                  if (y === undefined) return;
+                  isDraggingRef.current = true;
+                  setIsSheetTransitionEnabled(false);
+                  dragStartYRef.current = y;
+                  dragLastYRef.current = y;
+                  dragLastTimeRef.current = performance.now();
+                }}
+                onTouchMove={(e) => {
+                  if (!isDraggingRef.current) return;
+                  const startY = dragStartYRef.current;
+                  if (startY === null) return;
+                  const y = e.touches[0]?.clientY;
+                  if (y === undefined) return;
+                  const delta = Math.max(0, y - startY);
+                  setSheetTranslateY(delta);
+                  const progress = Math.min(1, delta / Math.max(1, sheetHeight));
+                  setBackdropOpacity(Math.max(0, 1 - progress * 0.9));
+                  dragLastYRef.current = y;
+                  dragLastTimeRef.current = performance.now();
+                }}
+                onTouchEnd={() => {
+                  if (!isDraggingRef.current) return;
+                  isDraggingRef.current = false;
+                  const now = performance.now();
+                  const startY = dragStartYRef.current;
+                  const lastY = dragLastYRef.current;
+                  const lastT = dragLastTimeRef.current;
+                  const dt = Math.max(1, now - lastT);
+                  const dy =
+                    lastY !== null && startY !== null ? lastY - startY : 0;
+                  const v = dy / dt; // px/ms
+                  dragStartYRef.current = null;
+                  dragLastYRef.current = null;
+
+                  const shouldClose =
+                    sheetTranslateY > Math.min(160, sheetHeight * 0.25) || v > 0.9;
+
+                  setIsSheetTransitionEnabled(true);
+                  if (shouldClose) {
+                    closeMobileSheet();
+                    onDropdownToggle?.(false);
+                    return;
+                  }
+                  setSheetTranslateY(0);
+                  setBackdropOpacity(1);
+                }}
+              >
+                <div className="h-1.5 w-10 rounded-full bg-neutral-200 dark:bg-neutral-700" />
+              </div>
+              <div className="px-4 pb-3">
+                <div className="text-sm font-medium">Select model</div>
+                <div className="mt-2 rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-800/60">
+                  <input
+                    ref={sheetSearchInputRef}
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Find model..."
+                    autoCorrect="off"
+                    className="w-full bg-transparent outline-none text-[15px]"
+                  />
+                </div>
+              </div>
+              <div className="px-2 pb-2">
+                <div className="max-h-[60vh] overflow-y-auto overflow-x-hidden rounded-2xl border border-neutral-200 bg-white dark:border-neutral-700 dark:bg-neutral-900">
+                  <ModelList
+                    ref={modelListRef}
+                    models={models}
+                    selectedModel={selectedModel}
+                    onModelSelect={handleModelSelect}
+                    cloudDisabled={cloudDisabled}
+                    isOpen={isMobileOpen}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 });

@@ -89,41 +89,7 @@ OLLAMA_ORIGINS="*" ollama serve
 
 ## Деплой
 
-### Vercel
-
-```bash
-npm run build
-npx vercel dist
-```
-
-### Docker
-
-```dockerfile
-FROM nginx:alpine
-COPY dist/ /usr/share/nginx/html/
-EXPOSE 80
-```
-
-```bash
-docker build -t ollama-web .
-docker run -p 80:80 ollama-web
-```
-
-### Пример nginx конфигурации
-
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
-    
-    root /path/to/ollama-web/dist;
-    index index.html;
-    
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-}
-```
+Полная инструкция деплоя “под ключ” (Ollama + CORS proxy + веб, чтобы можно было открыть из интернета) находится в `DEPLOY.md`.
 
 ## Отличия от оригинального Ollama.app
 

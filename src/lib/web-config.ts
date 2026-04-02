@@ -1,8 +1,32 @@
 const DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434";
 
+type RuntimeConfig = {
+  ollamaHost?: string;
+  corsProxyUrl?: string | null;
+  ollamaDotComUrl?: string;
+};
+
+declare global {
+  interface Window {
+    __OLLAMA_WEB_CONFIG__?: RuntimeConfig;
+  }
+}
+
+function getRuntimeConfig(): RuntimeConfig {
+  if (typeof window === "undefined") return {};
+  const cfg = window.__OLLAMA_WEB_CONFIG__;
+  if (!cfg || typeof cfg !== "object") return {};
+  return cfg;
+}
+
 export function getOllamaHost(): string {
   const stored = localStorage.getItem("ollama_host");
-  return stored || DEFAULT_OLLAMA_HOST;
+  if (stored) return stored;
+
+  const runtime = getRuntimeConfig().ollamaHost;
+  if (runtime && typeof runtime === "string") return runtime;
+
+  return DEFAULT_OLLAMA_HOST;
 }
 
 export function setOllamaHost(host: string): void {
@@ -22,7 +46,13 @@ export function setApiKey(key: string | null): void {
 }
 
 export function getOllamaDotComUrl(): string {
-  return localStorage.getItem("ollama_dot_com_url") || "https://ollama.com";
+  const stored = localStorage.getItem("ollama_dot_com_url");
+  if (stored) return stored;
+
+  const runtime = getRuntimeConfig().ollamaDotComUrl;
+  if (runtime && typeof runtime === "string") return runtime;
+
+  return "https://ollama.com";
 }
 
 export function setOllamaDotComUrl(url: string): void {
@@ -30,7 +60,14 @@ export function setOllamaDotComUrl(url: string): void {
 }
 
 export function getCorsProxyUrl(): string | null {
-  return localStorage.getItem("ollama_cors_proxy");
+  const stored = localStorage.getItem("ollama_cors_proxy");
+  if (stored) return stored;
+
+  const runtime = getRuntimeConfig().corsProxyUrl;
+  if (runtime === null) return null;
+  if (runtime && typeof runtime === "string") return runtime;
+
+  return null;
 }
 
 export function setCorsProxyUrl(url: string | null): void {

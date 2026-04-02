@@ -6,6 +6,7 @@ import { Field, Label, Description } from "@/components/ui/fieldset";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { useTheme, type ThemeMode } from "@/hooks/useTheme";
 import {
   ServerIcon,
   KeyIcon,
@@ -37,6 +38,7 @@ export default function Settings() {
   const queryClient = useQueryClient();
   const [showSaved, setShowSaved] = useState(false);
   const navigate = useNavigate();
+  const { theme, setTheme } = useTheme();
 
   const [ollamaHost, setOllamaHostState] = useState(getOllamaHost);
   const [apiKeyValue, setApiKeyValue] = useState(getApiKey() || "");
@@ -173,6 +175,39 @@ export default function Settings() {
       </header>
       <div className="w-full p-6 overflow-y-auto flex-1 overscroll-contain">
         <div className="space-y-4 max-w-2xl mx-auto">
+          {/* Appearance */}
+          <div className="overflow-hidden rounded-xl bg-white dark:bg-neutral-800">
+            <div className="p-4">
+              <Field>
+                <Label>Appearance</Label>
+                <Description>Theme preference for this device.</Description>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {(
+                    [
+                      ["system", "System"],
+                      ["light", "Light"],
+                      ["dark", "Dark"],
+                    ] as Array<[ThemeMode, string]>
+                  ).map(([mode, label]) => (
+                    <Button
+                      key={mode}
+                      type="button"
+                      color="white"
+                      className={`px-3 ${theme === mode ? "ring-2 ring-blue-500" : ""}`}
+                      onClick={() => {
+                        setTheme(mode);
+                        setShowSaved(true);
+                        setTimeout(() => setShowSaved(false), 1200);
+                      }}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+              </Field>
+            </div>
+          </div>
+
           {/* Server Configuration */}
           <div className="overflow-hidden rounded-xl bg-white dark:bg-neutral-800">
             <div className="space-y-4 p-4">

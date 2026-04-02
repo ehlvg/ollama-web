@@ -650,7 +650,9 @@ function ChatForm({
     fileInputRef.current?.click();
   };
   return (
-    <div className={`pb-3 px-3 ${hasMessages ? "mt-auto" : "my-auto"}`}>
+    <div
+      className={`px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] ${hasMessages ? "mt-auto" : "my-auto"}`}
+    >
       {chatId === "new" && <Logo />}
 
       {shouldShowLoginBanner && (
@@ -817,16 +819,16 @@ function ChatForm({
         </div>
 
         {/* Controls */}
-        <div className="flex w-full items-center justify-end gap-2 px-3 pt-2">
-          {/* Tool buttons - animate from underneath model picker */}
+        <div className="flex w-full flex-col gap-2 px-3 pt-2 sm:flex-row sm:items-center sm:justify-end">
           {!isDisabled && (
-            <div className="flex-1 flex justify-end items-center gap-2">
-              <div className={`flex gap-2`}>
+            <div className="w-full min-w-0 sm:flex-1">
+              <div className="flex w-full min-w-0 justify-end">
+                <div className="flex min-w-0 max-w-full gap-2 overflow-x-auto overscroll-x-contain scrollbar-hide pr-1">
                 {/* File Upload Buttons */}
                 <button
                   type="button"
                   onClick={handleFilesUpload}
-                  className="flex h-9 w-9 items-center justify-center rounded-full bg-white dark:bg-neutral-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer border border-transparent"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white dark:bg-neutral-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer border border-transparent"
                   title="Upload multiple files"
                 >
                   <PlusIcon className="w-4.5 h-4.5 stroke-2 text-neutral-500 dark:text-neutral-400" />
@@ -888,25 +890,26 @@ function ChatForm({
                     setSettings({ WebSearchEnabled: enable });
                   }}
                 />
+                </div>
               </div>
             </div>
           )}
 
           {/* Model picker and submit button */}
-          <div className="flex items-center gap-2 relative z-20">
-            <ModelPicker
-              ref={modelPickerRef}
-              chatId={chatId}
-              onModelSelect={focusChatFormInput}
-              onEscape={focusChatFormInput}
-              isDisabled={isDisabled}
-              onDropdownToggle={handleModelPickerDropdownToggle}
-            />
+          <div className="relative z-20 flex w-full items-center justify-end gap-2 sm:w-auto">
+            <div className="flex-1 min-w-0 max-w-[360px] sm:max-w-[280px] md:max-w-[320px] lg:max-w-[360px]">
+              <ModelPicker
+                ref={modelPickerRef}
+                chatId={chatId}
+                onModelSelect={focusChatFormInput}
+                onEscape={focusChatFormInput}
+                isDisabled={isDisabled}
+                onDropdownToggle={handleModelPickerDropdownToggle}
+              />
+            </div>
             <button
               ref={submitButtonRef}
-              onClick={
-                isStreaming || isDownloading ? handleCancel : handleSubmit
-              }
+              onClick={isStreaming || isDownloading ? handleCancel : handleSubmit}
               disabled={
                 !isStreaming &&
                 !isDownloading &&
@@ -915,7 +918,7 @@ function ChatForm({
                   (cloudDisabled && selectedModel?.isCloud()) ||
                   message.fileErrors.length > 0)
               }
-              className={`flex items-center justify-center h-9 w-9 rounded-full disabled:cursor-default cursor-pointer bg-black text-white dark:bg-white dark:text-black disabled:opacity-10 focus:outline-none focus:ring-2 focus:ring-blue-500`}
+              className={`flex items-center justify-center h-9 w-9 shrink-0 rounded-full disabled:cursor-default cursor-pointer bg-black text-white dark:bg-white dark:text-black disabled:opacity-10 focus:outline-none focus:ring-2 focus:ring-blue-500`}
             >
               {isStreaming || isDownloading ? (
                 <svg
