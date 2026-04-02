@@ -269,13 +269,13 @@ export default function Settings() {
                   <div className="w-full">
                     <Label>CORS Proxy (for web search)</Label>
                     <Description>
-                      For local proxy: http://localhost:8080. Run: npx local-cors-proxy --proxyUrl https://ollama.com/api/ --port 8080
+                      For local proxy: http://localhost:8080/proxy. Run: npx local-cors-proxy --proxyUrl https://ollama.com/api/ --port 8080
                     </Description>
                     <div className="mt-2 flex items-center space-x-2">
                       <Input
                         value={corsProxyValue}
                         onChange={(e) => setCorsProxyValue(e.target.value)}
-                        placeholder="http://localhost:8080"
+                        placeholder="http://localhost:8080/proxy"
                         className="flex-1"
                       />
                       <Button

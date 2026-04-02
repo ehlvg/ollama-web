@@ -14,7 +14,7 @@ import {
 } from "@/gotypes";
 import { Ollama } from "ollama/browser";
 import type { Message as OllamaMessage, Tool as OllamaTool, ToolCall as OllamaToolCall } from "ollama";
-import { getOllamaHost, getApiKey } from "./lib/web-config";
+import { getOllamaHost, getApiKey, getCorsProxyUrl, getOllamaDotComUrl } from "./lib/web-config";
 
 const CHATS_STORAGE_KEY = "ollama_web_chats";
 const SETTINGS_STORAGE_KEY = "ollama_web_settings";
@@ -433,12 +433,16 @@ function buildWebSearchTools(): OllamaTool[] {
     {
       type: "function",
       function: {
-        name: "web_search",
-        description: "Search the web for current information",
+        name: "webSearch",
+        description: "Performs a web search for the given query.",
         parameters: {
           type: "object",
           properties: {
-            query: { type: "string", description: "Search query" },
+            query: { type: "string", description: "Search query string." },
+            max_results: {
+              type: "number",
+              description: "The maximum number of results to return per query (default 3).",
+            },
           },
           required: ["query"],
         },
@@ -447,12 +451,12 @@ function buildWebSearchTools(): OllamaTool[] {
     {
       type: "function",
       function: {
-        name: "web_fetch",
-        description: "Fetch the full content of a web page",
+        name: "webFetch",
+        description: "Fetches a single page by URL.",
         parameters: {
           type: "object",
           properties: {
-            url: { type: "string", description: "URL to fetch" },
+            url: { type: "string", description: "A single URL to fetch." },
           },
           required: ["url"],
         },
@@ -465,6 +469,36 @@ function deltaFrom(acc: string, next: string) {
   if (!acc) return next;
   if (next.startsWith(acc)) return next.slice(acc.length);
   return next;
+}
+
+function getOllamaDotComApiBase(): string {
+  const proxy = getCorsProxyUrl();
+  if (proxy) {
+    const cleaned = proxy.replace(/\/+$/, "");
+    return cleaned.endsWith("/proxy") ? cleaned : `${cleaned}/proxy`;
+  }
+  return `${getOllamaDotComUrl().replace(/\/+$/, "")}/api`;
+}
+
+async function callOllamaDotComTool<T>(path: "web_search" | "web_fetch", body: unknown): Promise<T> {
+  const apiKey = getApiKey();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+  const res = await fetch(`${getOllamaDotComApiBase()}/${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Tool ${path} failed (${res.status}): ${text || res.statusText}`);
+  }
+
+  return (await res.json()) as T;
 }
 
 export async function* sendMessage(
@@ -588,7 +622,6 @@ export async function* sendMessage(
       let accumulatedContent = "";
       let accumulatedThinking = "";
       let toolCalls: OllamaToolCall[] = [];
-      let doneReason = "";
 
       let thinkingStart: Date | undefined;
       let thinkingEnd: Date | undefined;
@@ -657,11 +690,11 @@ export async function* sendMessage(
           }
         }
 
+        if (msg?.tool_calls && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+          toolCalls = msg.tool_calls as OllamaToolCall[];
+        }
+
         if (part.done) {
-          doneReason = String(part.done_reason ?? "");
-          if (msg?.tool_calls && Array.isArray(msg.tool_calls)) {
-            toolCalls = msg.tool_calls as OllamaToolCall[];
-          }
         }
       }
 
@@ -676,7 +709,7 @@ export async function* sendMessage(
         });
       }
 
-      if (doneReason === "tool_calls" && toolCalls.length > 0) {
+      if (toolCalls.length > 0) {
         const mappedToolCalls = toolCallsToGotypes(toolCalls);
 
         // Overwrite current assistant message in localStorage with tool calls.
@@ -703,17 +736,26 @@ export async function* sendMessage(
           const toolName = toolCall.function.name;
           const args = toolCall.function.arguments as any;
 
-          if (toolName === "web_search") {
+          if (toolName === "webSearch" || toolName === "web_search") {
             const query = typeof args?.query === "string" ? args.query : "";
-            const maxResults =
+            const max_results =
               typeof args?.max_results === "number"
                 ? args.max_results
                 : typeof args?.maxResults === "number"
                   ? args.maxResults
                   : 5;
 
-            const web = await ollama.webSearch({ query, maxResults } as any);
-            const toolResultText = (web.results || []).map((r: any) => r.content || "").filter(Boolean).join("\n\n");
+            let toolResultText = "";
+            try {
+              const web = await callOllamaDotComTool<any>("web_search", { query, max_results });
+              toolResultText = JSON.stringify(web).slice(0, 8000);
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              const hint = msg.includes("Failed to fetch")
+                ? " (CORS: set a CORS proxy in Settings → CORS Proxy (for web search))"
+                : "";
+              toolResultText = `ERROR: ${msg}${hint}`;
+            }
 
             chat.messages.push({
               role: "tool",
@@ -728,11 +770,19 @@ export async function* sendMessage(
               content: toolResultText,
               toolName,
             });
-          } else if (toolName === "web_fetch") {
+          } else if (toolName === "webFetch" || toolName === "web_fetch") {
             const url = typeof args?.url === "string" ? args.url : "";
-            const web = await ollama.webFetch({ url } as any);
-            const links = Array.isArray(web.links) && web.links.length > 0 ? `\n\nLinks:\n${web.links.map((l: string) => `- ${l}`).join("\n")}` : "";
-            const toolResultText = `**${web.title || "Fetched page"}**\n\n${web.content || ""}${links}`;
+            let toolResultText = "";
+            try {
+              const web = await callOllamaDotComTool<any>("web_fetch", { url });
+              toolResultText = JSON.stringify(web).slice(0, 8000);
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              const hint = msg.includes("Failed to fetch")
+                ? " (CORS: set a CORS proxy in Settings → CORS Proxy (for web search))"
+                : "";
+              toolResultText = `ERROR: ${msg}${hint}`;
+            }
 
             chat.messages.push({
               role: "tool",
