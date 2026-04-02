@@ -1,6 +1,12 @@
 import { Model } from "@/gotypes";
 
-export const FEATURED_MODELS = ["gpt-oss:120b-cloud"];
+export const FEATURED_MODELS = [
+  "gpt-oss:120b-cloud",
+  "kimi-k2.5:cloud",
+  "nemotron-3-super:cloud",
+  "glm-5:cloud",
+  "gpt-oss:20b-cloud",
+];
 
 function alphabeticalSort(a: Model, b: Model): number {
   return a.model.toLowerCase().localeCompare(b.model.toLowerCase());
