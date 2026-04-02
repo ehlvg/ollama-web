@@ -501,6 +501,123 @@ function getOllamaDotComApiBase(): string {
   return `${getOllamaDotComUrl().replace(/\/+$/, "")}/api`;
 }
 
+function toAbsoluteUrlMaybe(relativeOrAbsolute: string): string {
+  if (!relativeOrAbsolute) return relativeOrAbsolute;
+  const trimmed = relativeOrAbsolute.trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.startsWith("/") && typeof window !== "undefined") {
+    try {
+      return new URL(trimmed, window.location.origin).toString();
+    } catch {
+      return trimmed;
+    }
+  }
+  return trimmed;
+}
+
+type OllamaChatPart = {
+  message?: {
+    content?: string;
+    thinking?: string;
+    tool_calls?: OllamaToolCall[];
+  };
+  done?: boolean;
+};
+
+function chatStreamViaFetch(args: {
+  url: string;
+  body: unknown;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}): AsyncIterable<OllamaChatPart> & { abort: () => void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+
+  const signal = args.signal
+    ? (() => {
+        if (args.signal.aborted) controller.abort();
+        else args.signal.addEventListener("abort", abort, { once: true });
+        return controller.signal;
+      })()
+    : controller.signal;
+
+  const iterable: AsyncIterable<OllamaChatPart> = {
+    [Symbol.asyncIterator]() {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      let buffer = "";
+      const decoder = new TextDecoder();
+      let started = false;
+
+      const ensureReader = async () => {
+        if (started) return;
+        started = true;
+
+        const res = await fetch(args.url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/x-ndjson, application/json",
+            ...(args.headers || {}),
+          },
+          body: JSON.stringify(args.body),
+          signal,
+        });
+
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`Chat failed (${res.status}): ${text || res.statusText}`);
+        }
+        if (!res.body) {
+          throw new Error("Chat failed: empty response body");
+        }
+        reader = res.body.getReader();
+      };
+
+      return {
+        async next() {
+          await ensureReader();
+          if (!reader) return { done: true, value: undefined as any };
+
+          while (true) {
+            const nl = buffer.indexOf("\n");
+            if (nl !== -1) {
+              const line = buffer.slice(0, nl).trim();
+              buffer = buffer.slice(nl + 1);
+              if (!line) continue;
+              try {
+                return { done: false, value: JSON.parse(line) as OllamaChatPart };
+              } catch {
+                continue;
+              }
+            }
+
+            const { done, value } = await reader.read();
+            if (done) {
+              const tail = buffer.trim();
+              buffer = "";
+              if (tail) {
+                try {
+                  return { done: false, value: JSON.parse(tail) as OllamaChatPart };
+                } catch {
+                  // ignore
+                }
+              }
+              return { done: true, value: undefined as any };
+            }
+            buffer += decoder.decode(value, { stream: true });
+          }
+        },
+        async return() {
+          abort();
+          return { done: true, value: undefined as any };
+        },
+      };
+    },
+  };
+
+  return Object.assign(iterable, { abort });
+}
+
 async function callOllamaDotComTool<T>(path: "web_search" | "web_fetch", body: unknown): Promise<T> {
   const apiKey = getApiKey();
   const headers: Record<string, string> = {
@@ -667,7 +784,7 @@ export async function* sendMessage(
       let sawThinking = false;
       let sawContent = false;
 
-      const responseStream = (await ollama.chat({
+      const localRequest = {
         model: model.model,
         messages: buildRequestMessages(),
         stream: true,
@@ -676,7 +793,19 @@ export async function* sendMessage(
         options: {
           num_ctx: ContextLength,
         } as any,
-      } as any)) as any;
+      } as any;
+
+      const apiKey = getApiKey();
+      const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+
+      const responseStream = model.isCloud()
+        ? (chatStreamViaFetch({
+            url: `${toAbsoluteUrlMaybe(getOllamaDotComApiBase())}/chat`,
+            body: localRequest,
+            headers,
+            signal,
+          }) as any)
+        : ((await ollama.chat(localRequest)) as any);
 
       if (signal) {
         const abort = () => responseStream.abort();
