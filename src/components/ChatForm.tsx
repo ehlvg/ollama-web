@@ -1,6 +1,5 @@
 import Logo from "@/components/Logo";
 import { ModelPicker } from "@/components/ModelPicker";
-import { WebSearchButton } from "@/components/WebSearchButton";
 import { ImageThumbnail } from "@/components/ImageThumbnail";
 import { isImageFile } from "@/utils/imageUtils";
 import {
@@ -21,15 +20,14 @@ import {
   useHasVisionCapability,
   useHasToolsCapability,
 } from "@/hooks/useModelCapabilities";
-import { useUser } from "@/hooks/useUser";
-import { DisplayLogin } from "@/components/DisplayLogin";
 import { ErrorEvent, Message } from "@/gotypes";
 import { useSettings } from "@/hooks/useSettings";
-import { useCloudStatus } from "@/hooks/useCloudStatus";
-import { ThinkButton } from "./ThinkButton";
 import { ErrorMessage } from "./ErrorMessage";
 import { processFiles } from "@/utils/fileValidation";
-import { PlusIcon } from "@heroicons/react/24/outline";
+import {
+  PlusIcon,
+  WrenchScrewdriverIcon,
+} from "@heroicons/react/24/outline";
 
 export type ThinkingLevel = "low" | "medium" | "high";
 
@@ -100,9 +98,8 @@ function ChatForm({
   const compositionEndTimeoutRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const thinkButtonRef = useRef<HTMLButtonElement>(null);
-  const thinkingLevelButtonRef = useRef<HTMLButtonElement>(null);
-  const webSearchButtonRef = useRef<HTMLButtonElement>(null);
+  const toolsButtonRef = useRef<HTMLButtonElement>(null);
+  const toolsMenuRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLButtonElement>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -113,43 +110,29 @@ function ChatForm({
   const isDownloading = isDownloadingModel;
   const { selectedModel } = useSelectedModel();
   const hasVisionCapability = useHasVisionCapability(selectedModel?.model);
-  const { isAuthenticated, isLoading: isLoadingUser } = useUser();
-  const [loginPromptFeature, setLoginPromptFeature] = useState<
-    "webSearch" | "turbo" | null
-  >(null);
+  const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
   const [fileUploadError, setFileUploadError] = useState<ErrorEvent | null>(
     null,
   );
 
-  const handleThinkingLevelDropdownToggle = (isOpen: boolean) => {
-    if (
-      isOpen &&
-      modelPickerRef.current &&
-      (modelPickerRef.current as any).closeDropdown
-    ) {
-      (modelPickerRef.current as any).closeDropdown();
-    }
-  };
-
   const handleModelPickerDropdownToggle = (isOpen: boolean) => {
     if (
       isOpen &&
-      thinkingLevelButtonRef.current &&
-      (thinkingLevelButtonRef.current as any).closeDropdown
+      toolsMenuRef.current
     ) {
-      (thinkingLevelButtonRef.current as any).closeDropdown();
+      setIsToolsMenuOpen(false);
     }
   };
 
   const {
     settings: {
+      toolsEnabled,
       webSearchEnabled,
       thinkEnabled,
       thinkLevel: settingsThinkLevel,
     },
     setSettings,
   } = useSettings();
-  const { cloudDisabled } = useCloudStatus();
 
   const supportsWebSearch = useHasToolsCapability(selectedModel?.model);
   // Use per-chat thinking level instead of global
@@ -177,12 +160,6 @@ function ChatForm({
     webSearchEnabled,
     setSettings,
   ]);
-
-  useEffect(() => {
-    if (cloudDisabled && webSearchEnabled) {
-      setSettings({ WebSearchEnabled: false });
-    }
-  }, [cloudDisabled, webSearchEnabled, setSettings]);
 
   const removeFile = (index: number) => {
     setMessage((prev) => ({
@@ -236,27 +213,6 @@ function ChatForm({
     }
   }, [onFilesReceived, handleFilesReceived]);
 
-  // Determine if login banner should be shown
-  const shouldShowLoginBanner =
-    !cloudDisabled &&
-    !isLoadingUser &&
-    !isAuthenticated &&
-    ((webSearchEnabled && supportsWebSearch) || selectedModel?.isCloud());
-
-  // Determine which feature to highlight in the banner
-  const getActiveFeatureForBanner = () => {
-    if (cloudDisabled) return null;
-    if (!isAuthenticated) {
-      if (loginPromptFeature) return loginPromptFeature;
-      if (webSearchEnabled && selectedModel?.isCloud()) return "webSearch";
-      if (webSearchEnabled) return "webSearch";
-      if (selectedModel?.isCloud()) return "turbo";
-    }
-    return null;
-  };
-
-  const activeFeatureForBanner = getActiveFeatureForBanner();
-
   const resetChatForm = () => {
     setMessage({
       content: "",
@@ -269,16 +225,6 @@ function ChatForm({
     }
   };
 
-  // Clear loginPromptFeature when user becomes authenticated or no features are enabled
-  useEffect(() => {
-    if (
-      isAuthenticated ||
-      cloudDisabled ||
-      (!webSearchEnabled && !!selectedModel?.isCloud())
-    ) {
-      setLoginPromptFeature(null);
-    }
-  }, [isAuthenticated, webSearchEnabled, selectedModel, cloudDisabled]);
 
   // When entering edit mode, populate the composition with existing data
   useEffect(() => {
@@ -331,6 +277,24 @@ function ChatForm({
     }
   }, [autoFocus, isStreaming, editingMessage]);
 
+  useEffect(() => {
+    if (!isToolsMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        toolsMenuRef.current?.contains(target) ||
+        toolsButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setIsToolsMenuOpen(false);
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [isToolsMenuOpen]);
+
   const focusChatFormInput = () => {
     // Focus textarea after model selection or navigation
     if (textareaRef.current) {
@@ -343,13 +307,7 @@ function ChatForm({
   // Navigation helper function
   const navigateToNextElement = useCallback(
     (current: HTMLElement, direction: "next" | "prev") => {
-      const elements = [
-        textareaRef,
-        modelSupportsThinkingLevels ? thinkingLevelButtonRef : thinkButtonRef,
-        webSearchButtonRef,
-        modelPickerRef,
-        submitButtonRef,
-      ]
+      const elements = [textareaRef, toolsButtonRef, modelPickerRef, submitButtonRef]
         .map((ref) => ref.current)
         .filter(Boolean) as HTMLElement[];
       const index = elements.indexOf(current);
@@ -409,10 +367,7 @@ function ChatForm({
       if (e.key === "Tab" && e.target !== textareaRef.current) {
         const target = e.target as HTMLElement;
         const focusableElements = [
-          modelSupportsThinkingLevels
-            ? thinkingLevelButtonRef.current
-            : thinkButtonRef.current,
-          webSearchButtonRef.current,
+          toolsButtonRef.current,
           modelPickerRef.current,
           submitButtonRef.current,
         ].filter(Boolean) as HTMLElement[];
@@ -470,15 +425,6 @@ function ChatForm({
   const handleSubmit = async () => {
     if (!message.content.trim() || isStreaming || isDownloading) return;
 
-    if (cloudDisabled && selectedModel?.isCloud()) {
-      return;
-    }
-
-    // Check if cloud mode is enabled but user is not authenticated
-    if (shouldShowLoginBanner) {
-      return;
-    }
-
     // Prepare attachments for submission
     const attachmentsToSend: FileAttachment[] = message.attachments.map(
       (att) => ({
@@ -487,8 +433,7 @@ function ChatForm({
       }),
     );
 
-    const useWebSearch =
-      supportsWebSearch && webSearchEnabled && !cloudDisabled;
+    const useWebSearch = supportsWebSearch && webSearchEnabled;
     const useThink = modelSupportsThinkingLevels
       ? thinkLevel
       : supportsThinkToggling
@@ -500,6 +445,7 @@ function ChatForm({
         attachments: attachmentsToSend,
         index: undefined,
         webSearch: useWebSearch,
+        fileTools: toolsEnabled,
         think: useThink,
       });
     } else {
@@ -507,6 +453,7 @@ function ChatForm({
         message: message.content,
         attachments: attachmentsToSend,
         webSearch: useWebSearch,
+        fileTools: toolsEnabled,
         think: useThink,
         onChatEvent: (event) => {
           if (event.eventName === "chat_created" && event.chatId) {
@@ -551,10 +498,7 @@ function ChatForm({
     if (e.key === "Tab") {
       e.preventDefault();
       const focusableElements = [
-        modelSupportsThinkingLevels
-          ? thinkingLevelButtonRef.current
-          : thinkButtonRef.current,
-        webSearchButtonRef.current,
+        toolsButtonRef.current,
         modelPickerRef.current,
         submitButtonRef.current,
       ].filter(Boolean);
@@ -654,32 +598,6 @@ function ChatForm({
       className={`px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] ${hasMessages ? "mt-auto" : "my-auto"}`}
     >
       {chatId === "new" && <Logo />}
-
-      {shouldShowLoginBanner && (
-        <DisplayLogin
-          error={
-            new ErrorEvent({
-              eventName: "error",
-              error:
-                activeFeatureForBanner === "webSearch"
-                  ? "Web search requires authentication"
-                  : "Cloud models require authentication",
-              code: "cloud_unauthorized",
-            })
-          }
-          message={
-            activeFeatureForBanner === "webSearch"
-              ? "Web search requires an Ollama account"
-              : "Cloud models require an Ollama account"
-          }
-          className="mb-4"
-          onDismiss={() => {
-            // Disable the active features when dismissing
-            if (webSearchEnabled) setSettings({ WebSearchEnabled: false });
-            setLoginPromptFeature(null);
-          }}
-        />
-      )}
 
       {/* File upload error message */}
       {fileUploadError && <ErrorMessage error={fileUploadError} />}
@@ -821,75 +739,128 @@ function ChatForm({
         {/* Controls */}
         <div className="flex w-full flex-col gap-2 px-3 pt-2 sm:flex-row sm:items-center sm:justify-end">
           {!isDisabled && (
-            <div className="w-full min-w-0 sm:flex-1">
+            <div className="relative z-30 w-full min-w-0 sm:flex-1">
               <div className="flex w-full min-w-0 justify-end">
-                <div className="flex min-w-0 max-w-full gap-2 overflow-x-auto overscroll-x-contain scrollbar-hide pr-1">
-                {/* File Upload Buttons */}
-                <button
-                  type="button"
-                  onClick={handleFilesUpload}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white dark:bg-neutral-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer border border-transparent"
-                  title="Upload multiple files"
-                >
-                  <PlusIcon className="w-4.5 h-4.5 stroke-2 text-neutral-500 dark:text-neutral-400" />
-                </button>
-                {/* Thinking Level Button */}
-                {modelSupportsThinkingLevels && (
-                  <>
-                    <ThinkButton
-                      mode="thinkingLevel"
-                      ref={thinkingLevelButtonRef}
-                      isVisible={modelSupportsThinkingLevels}
-                      currentLevel={thinkLevel}
-                      onLevelChange={setThinkingLevel}
-                      onDropdownToggle={handleThinkingLevelDropdownToggle}
-                    />
-                  </>
-                )}
-                {/* Think Button turn on and off */}
-                {supportsThinkToggling && !modelSupportsThinkingLevels && (
-                  <>
-                    <ThinkButton
-                      mode="think"
-                      ref={thinkButtonRef}
-                      isVisible={
-                        supportsThinkToggling && !modelSupportsThinkingLevels
-                      }
-                      isActive={thinkEnabled}
-                      onToggle={() => {
-                        // DeepSeek-v3 specific - thinking and web search are mutually exclusive
-                        if (supportsThinkToggling) {
-                          const enable = !thinkEnabled;
-                          setSettings({
-                            ThinkEnabled: enable,
-                            ...(enable ? { WebSearchEnabled: false } : {}),
-                          });
-                          return;
-                        }
-                        setSettings({ ThinkEnabled: !thinkEnabled });
-                      }}
-                    />
-                  </>
-                )}
-                <WebSearchButton
-                  ref={webSearchButtonRef}
-                  isVisible={supportsWebSearch && !cloudDisabled}
-                  isActive={webSearchEnabled}
-                  onToggle={() => {
-                    if (!webSearchEnabled && !isAuthenticated) {
-                      setLoginPromptFeature("webSearch");
-                    }
-                    const enable = !webSearchEnabled;
-                    if (supportsThinkToggling && enable) {
-                      setSettings({
-                        WebSearchEnabled: true,
-                        ThinkEnabled: false,
-                      });
-                      return;
-                    }
-                    setSettings({ WebSearchEnabled: enable });
-                  }}
-                />
+                <div className="flex min-w-0 max-w-full gap-2 overflow-visible pr-1">
+                  <button
+                    type="button"
+                    onClick={handleFilesUpload}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white dark:bg-neutral-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer border border-transparent"
+                    title="Upload multiple files"
+                  >
+                    <PlusIcon className="w-4.5 h-4.5 stroke-2 text-neutral-500 dark:text-neutral-400" />
+                  </button>
+                  <div className="relative">
+                    <button
+                      ref={toolsButtonRef}
+                      type="button"
+                      onClick={() => setIsToolsMenuOpen((open) => !open)}
+                      className="flex h-9 shrink-0 items-center gap-2 rounded-full bg-white px-3 text-sm text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                      title="Tools"
+                    >
+                      <WrenchScrewdriverIcon className="h-4 w-4" />
+                      <span>Tools</span>
+                      {(webSearchEnabled || thinkEnabled || toolsEnabled) && (
+                        <span className="flex h-1.5 w-1.5 rounded-full bg-[rgba(0,115,255,1)]" />
+                      )}
+                    </button>
+                    {isToolsMenuOpen && (
+                      <div
+                        ref={toolsMenuRef}
+                        className="absolute bottom-full left-0 z-30 mb-2 w-[18rem] rounded-2xl border border-neutral-200 bg-white p-2 shadow-xl shadow-black/5 dark:border-neutral-700 dark:bg-neutral-800"
+                      >
+                        <div className="px-2 pb-2 pt-1 text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
+                          Tools
+                        </div>
+                        <div className="space-y-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const enable = !webSearchEnabled;
+                              if (supportsThinkToggling && enable) {
+                                setSettings({
+                                  WebSearchEnabled: true,
+                                  ThinkEnabled: false,
+                                });
+                              } else {
+                                setSettings({ WebSearchEnabled: enable });
+                              }
+                            }}
+                            disabled={!supportsWebSearch}
+                            className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-700/60"
+                          >
+                            <div>
+                              <div className="text-sm text-neutral-800 dark:text-neutral-100">
+                                Web Search
+                              </div>
+                              <div className="text-xs text-neutral-500">
+                                Let the model search the web.
+                              </div>
+                            </div>
+                            <div className={`h-2.5 w-2.5 rounded-full ${webSearchEnabled ? "bg-[rgba(0,115,255,1)]" : "bg-neutral-300 dark:bg-neutral-600"}`} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (modelSupportsThinkingLevels) return;
+                              const enable = !thinkEnabled;
+                              if (supportsThinkToggling && enable) {
+                                setSettings({
+                                  ThinkEnabled: enable,
+                                  WebSearchEnabled: false,
+                                });
+                                return;
+                              }
+                              setSettings({ ThinkEnabled: enable });
+                            }}
+                            disabled={!supportsThinkToggling && !modelSupportsThinkingLevels}
+                            className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-700/60"
+                          >
+                            <div>
+                              <div className="text-sm text-neutral-800 dark:text-neutral-100">
+                                Thinking
+                              </div>
+                              <div className="text-xs text-neutral-500">
+                                {modelSupportsThinkingLevels
+                                  ? `Level: ${thinkLevel}`
+                                  : "Enable deeper reasoning when supported."}
+                              </div>
+                            </div>
+                            <div className={`h-2.5 w-2.5 rounded-full ${(modelSupportsThinkingLevels || thinkEnabled) ? "bg-[rgba(0,115,255,1)]" : "bg-neutral-300 dark:bg-neutral-600"}`} />
+                          </button>
+                          {modelSupportsThinkingLevels && (
+                            <div className="grid grid-cols-3 gap-1 px-3 pb-1 pt-1">
+                              {(["low", "medium", "high"] as ThinkingLevel[]).map((level) => (
+                                <button
+                                  key={level}
+                                  type="button"
+                                  onClick={() => setThinkingLevel(level)}
+                                  className={`rounded-full px-2 py-1 text-xs capitalize ${thinkLevel === level ? "bg-neutral-900 text-white dark:bg-white dark:text-black" : "bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300"}`}
+                                >
+                                  {level}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setSettings({ Tools: !toolsEnabled })}
+                            className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-neutral-700/60"
+                          >
+                            <div>
+                              <div className="text-sm text-neutral-800 dark:text-neutral-100">
+                                Code Interpreter
+                              </div>
+                              <div className="text-xs text-neutral-500">
+                                Run commands in a temporary Vercel Sandbox.
+                              </div>
+                            </div>
+                            <div className={`h-2.5 w-2.5 rounded-full ${toolsEnabled ? "bg-[rgba(0,115,255,1)]" : "bg-neutral-300 dark:bg-neutral-600"}`} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -914,8 +885,6 @@ function ChatForm({
                 !isStreaming &&
                 !isDownloading &&
                 (!message.content.trim() ||
-                  shouldShowLoginBanner ||
-                  (cloudDisabled && selectedModel?.isCloud()) ||
                   message.fileErrors.length > 0)
               }
               className={`flex items-center justify-center h-9 w-9 shrink-0 rounded-full disabled:cursor-default cursor-pointer bg-black text-white dark:bg-white dark:text-black disabled:opacity-10 focus:outline-none focus:ring-2 focus:ring-blue-500`}

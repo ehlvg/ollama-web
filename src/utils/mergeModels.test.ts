@@ -4,125 +4,44 @@ import { mergeModels, FEATURED_MODELS } from "@/utils/mergeModels";
 import "@/api";
 
 describe("Model merging logic", () => {
-  it("should handle cloud models with -cloud suffix", () => {
+  it("keeps featured cloud catalog models first", () => {
     const localModels: Model[] = [
-      new Model({ model: "gpt-oss:120b-cloud" }),
-      new Model({ model: "llama3:latest" }),
-      new Model({ model: "mistral:latest" }),
+      new Model({ model: "gpt-oss:120b" }),
+      new Model({ model: "llama3.2" }),
+      new Model({ model: "mistral" }),
     ];
 
     const merged = mergeModels(localModels);
 
-    // First verify cloud models are first and in FEATURED_MODELS order
-    const cloudModels = FEATURED_MODELS.filter((m: string) =>
-      m.endsWith("cloud"),
-    );
-    for (let i = 0; i < cloudModels.length; i++) {
-      expect(merged[i].model).toBe(cloudModels[i]);
+    for (let i = 0; i < FEATURED_MODELS.length; i++) {
+      expect(merged[i].model).toBe(FEATURED_MODELS[i]);
       expect(merged[i].isCloud()).toBe(true);
     }
 
-    // Then verify non-cloud featured models are next and in FEATURED_MODELS order
-    const nonCloudFeatured = FEATURED_MODELS.filter(
-      (m: string) => !m.endsWith("cloud"),
-    );
-    for (let i = 0; i < nonCloudFeatured.length; i++) {
-      const model = merged[i + cloudModels.length];
-      expect(model.model).toBe(nonCloudFeatured[i]);
-      expect(model.isCloud()).toBe(false);
-    }
-
-    // Verify local models are preserved and come after featured models
-    const featuredCount = FEATURED_MODELS.length;
-    expect(merged[featuredCount].model).toBe("llama3:latest");
-    expect(merged[featuredCount + 1].model).toBe("mistral:latest");
-
-    // Length should be exactly featured models plus our local models
-    expect(merged.length).toBe(FEATURED_MODELS.length + 2);
+    expect(merged[FEATURED_MODELS.length].model).toBe("llama3.2");
+    expect(merged[FEATURED_MODELS.length + 1].model).toBe("mistral");
   });
 
-  it("should hide cloud models when cloud is disabled", () => {
-    const localModels: Model[] = [
-      new Model({ model: "gpt-oss:120b-cloud" }),
-      new Model({ model: "llama3:latest" }),
-      new Model({ model: "mistral:latest" }),
-    ];
-
-    const merged = mergeModels(localModels, true); // cloud disabled = true
-
-    // No cloud models should be present
-    const cloudModels = merged.filter((m) => m.isCloud());
-    expect(cloudModels.length).toBe(0);
-
-    // Should have non-cloud featured models
-    const nonCloudFeatured = FEATURED_MODELS.filter(
-      (m) => !m.endsWith("cloud"),
-    );
-    for (let i = 0; i < nonCloudFeatured.length; i++) {
-      const model = merged[i];
-      expect(model.model).toBe(nonCloudFeatured[i]);
-      expect(model.isCloud()).toBe(false);
-    }
-
-    // Local models should be preserved
-    const featuredCount = nonCloudFeatured.length;
-    expect(merged[featuredCount].model).toBe("llama3:latest");
-    expect(merged[featuredCount + 1].model).toBe("mistral:latest");
-  });
-
-  it("should handle empty input", () => {
+  it("handles empty input", () => {
     const merged = mergeModels([]);
 
-    // First verify cloud models are first and in FEATURED_MODELS order
-    const cloudModels = FEATURED_MODELS.filter((m) => m.endsWith("cloud"));
-    for (let i = 0; i < cloudModels.length; i++) {
-      expect(merged[i].model).toBe(cloudModels[i]);
-      expect(merged[i].isCloud()).toBe(true);
-    }
-
-    // Then verify non-cloud featured models are next and in FEATURED_MODELS order
-    const nonCloudFeatured = FEATURED_MODELS.filter(
-      (m) => !m.endsWith("cloud"),
-    );
-    for (let i = 0; i < nonCloudFeatured.length; i++) {
-      const model = merged[i + cloudModels.length];
-      expect(model.model).toBe(nonCloudFeatured[i]);
-      expect(model.isCloud()).toBe(false);
-    }
-
-    // Length should be exactly FEATURED_MODELS length
-    expect(merged.length).toBe(FEATURED_MODELS.length);
+    expect(merged.map((model) => model.model)).toEqual(FEATURED_MODELS);
+    expect(merged.every((model) => model.isCloud())).toBe(true);
   });
 
-  it("should sort models correctly", () => {
+  it("sorts non-featured local models alphabetically", () => {
     const localModels: Model[] = [
-      new Model({ model: "zephyr:latest" }),
-      new Model({ model: "alpha:latest" }),
-      new Model({ model: "gpt-oss:120b-cloud" }),
+      new Model({ model: "zephyr" }),
+      new Model({ model: "alpha" }),
+      new Model({ model: "gpt-oss:120b" }),
     ];
 
     const merged = mergeModels(localModels);
 
-    // First verify cloud models are first and in FEATURED_MODELS order
-    const cloudModels = FEATURED_MODELS.filter((m) => m.endsWith("cloud"));
-    for (let i = 0; i < cloudModels.length; i++) {
-      expect(merged[i].model).toBe(cloudModels[i]);
-      expect(merged[i].isCloud()).toBe(true);
-    }
-
-    // Then verify non-cloud featured models are next and in FEATURED_MODELS order
-    const nonCloudFeatured = FEATURED_MODELS.filter(
-      (m) => !m.endsWith("cloud"),
+    expect(merged.slice(0, FEATURED_MODELS.length).map((model) => model.model)).toEqual(
+      FEATURED_MODELS,
     );
-    for (let i = 0; i < nonCloudFeatured.length; i++) {
-      const model = merged[i + cloudModels.length];
-      expect(model.model).toBe(nonCloudFeatured[i]);
-      expect(model.isCloud()).toBe(false);
-    }
-
-    // Non-featured local models should be at the end in alphabetical order
-    const featuredCount = FEATURED_MODELS.length;
-    expect(merged[featuredCount].model).toBe("alpha:latest");
-    expect(merged[featuredCount + 1].model).toBe("zephyr:latest");
+    expect(merged[FEATURED_MODELS.length].model).toBe("alpha");
+    expect(merged[FEATURED_MODELS.length + 1].model).toBe("zephyr");
   });
 });

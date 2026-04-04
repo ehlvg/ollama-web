@@ -1,10 +1,38 @@
-const DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434";
+const DEFAULT_OLLAMA_HOST = "https://ollama.com";
 
 type RuntimeConfig = {
   ollamaHost?: string;
-  corsProxyUrl?: string | null;
-  ollamaDotComUrl?: string;
 };
+
+function storageGet(key: string): string | null {
+  if (
+    typeof localStorage === "undefined" ||
+    typeof localStorage.getItem !== "function"
+  ) {
+    return null;
+  }
+  return localStorage.getItem(key);
+}
+
+function storageSet(key: string, value: string): void {
+  if (
+    typeof localStorage === "undefined" ||
+    typeof localStorage.setItem !== "function"
+  ) {
+    return;
+  }
+  localStorage.setItem(key, value);
+}
+
+function storageRemove(key: string): void {
+  if (
+    typeof localStorage === "undefined" ||
+    typeof localStorage.removeItem !== "function"
+  ) {
+    return;
+  }
+  localStorage.removeItem(key);
+}
 
 declare global {
   interface Window {
@@ -37,27 +65,8 @@ function normalizeOllamaHost(rawHost: string): string {
 }
 
 export function getOllamaHost(): string {
-  const stored = localStorage.getItem("ollama_host");
+  const stored = storageGet("ollama_host");
   if (stored) {
-    // Avoid mixed-content failures when the UI is served over HTTPS.
-    // If the user previously saved a docker-internal or loopback HTTP host,
-    // prefer the same-origin reverse proxy instead.
-    if (typeof window !== "undefined" && window.location?.protocol === "https:") {
-      const trimmed = stored.trim();
-      if (trimmed.startsWith("http://")) {
-        try {
-          const u = new URL(trimmed);
-          const isLocalish =
-            u.hostname === "localhost" ||
-            u.hostname === "127.0.0.1" ||
-            u.hostname === "0.0.0.0" ||
-            u.hostname === "ollama";
-          if (isLocalish) return "/ollama";
-        } catch {
-          return "/ollama";
-        }
-      }
-    }
     return normalizeOllamaHost(stored);
   }
 
@@ -68,50 +77,17 @@ export function getOllamaHost(): string {
 }
 
 export function setOllamaHost(host: string): void {
-  localStorage.setItem("ollama_host", host);
+  storageSet("ollama_host", host);
 }
 
 export function getApiKey(): string | null {
-  return localStorage.getItem("ollama_api_key");
+  return storageGet("ollama_api_key");
 }
 
 export function setApiKey(key: string | null): void {
   if (key) {
-    localStorage.setItem("ollama_api_key", key);
+    storageSet("ollama_api_key", key);
   } else {
-    localStorage.removeItem("ollama_api_key");
-  }
-}
-
-export function getOllamaDotComUrl(): string {
-  const stored = localStorage.getItem("ollama_dot_com_url");
-  if (stored) return stored;
-
-  const runtime = getRuntimeConfig().ollamaDotComUrl;
-  if (runtime && typeof runtime === "string") return runtime;
-
-  return "https://ollama.com";
-}
-
-export function setOllamaDotComUrl(url: string): void {
-  localStorage.setItem("ollama_dot_com_url", url);
-}
-
-export function getCorsProxyUrl(): string | null {
-  const stored = localStorage.getItem("ollama_cors_proxy");
-  if (stored) return stored;
-
-  const runtime = getRuntimeConfig().corsProxyUrl;
-  if (runtime === null) return null;
-  if (runtime && typeof runtime === "string") return runtime;
-
-  return null;
-}
-
-export function setCorsProxyUrl(url: string | null): void {
-  if (url) {
-    localStorage.setItem("ollama_cors_proxy", url);
-  } else {
-    localStorage.removeItem("ollama_cors_proxy");
+    storageRemove("ollama_api_key");
   }
 }

@@ -5,10 +5,6 @@ import { Model } from "@/gotypes";
 import { FEATURED_MODELS } from "@/utils/mergeModels";
 import { useCloudStatus } from "./useCloudStatus";
 
-function isCloudFeaturedName(name: string): boolean {
-  return name.endsWith("cloud");
-}
-
 export function useFeaturedCloudPull(
   installedModels: Model[] | undefined,
   isLoading: boolean,
@@ -22,9 +18,7 @@ export function useFeaturedCloudPull(
     started.current = true;
 
     const installed = new Set(installedModels.map((m) => m.model));
-    const missing = FEATURED_MODELS.filter(
-      (name) => isCloudFeaturedName(name) && !installed.has(name),
-    );
+    const missing = FEATURED_MODELS.filter((name) => !installed.has(name));
     if (missing.length === 0) return;
 
     void (async () => {

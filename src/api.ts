@@ -14,10 +14,13 @@ import {
 } from "@/gotypes";
 import { Ollama } from "ollama/browser";
 import type { Message as OllamaMessage, Tool as OllamaTool, ToolCall as OllamaToolCall } from "ollama";
-import { getOllamaHost, getApiKey, getCorsProxyUrl, getOllamaDotComUrl } from "./lib/web-config";
+import { getOllamaHost, getApiKey } from "./lib/web-config";
+import { FEATURED_MODELS } from "./utils/mergeModels";
 
 const CHATS_STORAGE_KEY = "ollama_web_chats";
 const SETTINGS_STORAGE_KEY = "ollama_web_settings";
+const PULLED_CLOUD_MODELS_STORAGE_KEY = "ollama_web_pulled_cloud_models";
+const OLLAMA_CLOUD_URL = "https://ollama.com";
 
 declare module "@/gotypes" {
   interface Model {
@@ -26,8 +29,121 @@ declare module "@/gotypes" {
 }
 
 Model.prototype.isCloud = function (): boolean {
-  return this.model.endsWith("cloud");
+  const host = getOllamaHost().toLowerCase();
+  if (host === OLLAMA_CLOUD_URL) return true;
+  return (
+    FEATURED_MODELS.includes(this.model) ||
+    getStoredPulledCloudModels().includes(this.model)
+  );
 };
+
+function getStoredPulledCloudModels(): string[] {
+  if (
+    typeof localStorage === "undefined" ||
+    typeof localStorage.getItem !== "function"
+  ) {
+    return [];
+  }
+  const stored = localStorage.getItem(PULLED_CLOUD_MODELS_STORAGE_KEY);
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((value): value is string => typeof value === "string");
+  } catch {
+    return [];
+  }
+}
+
+function savePulledCloudModels(models: string[]): void {
+  if (
+    typeof localStorage === "undefined" ||
+    typeof localStorage.setItem !== "function"
+  ) {
+    return;
+  }
+  localStorage.setItem(
+    PULLED_CLOUD_MODELS_STORAGE_KEY,
+    JSON.stringify(Array.from(new Set(models)).sort((a, b) => a.localeCompare(b))),
+  );
+}
+
+function rememberPulledCloudModel(modelName: string): void {
+  if (!modelName.trim()) return;
+  savePulledCloudModels([...getStoredPulledCloudModels(), modelName.trim()]);
+}
+
+function shouldUseSameOriginProxy(): boolean {
+  if (typeof window === "undefined") return false;
+  return !["localhost", "127.0.0.1"].includes(window.location.hostname);
+}
+
+function resolveTargetUrl(input: string | URL): string {
+  const raw = String(input);
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (typeof window !== "undefined") {
+    return new URL(raw, window.location.origin).toString();
+  }
+  return raw;
+}
+
+function createProxyFetch(): typeof fetch {
+  return async (input, init) => {
+    const request = input instanceof Request ? input : null;
+    const targetUrl = resolveTargetUrl(request?.url ?? String(input));
+    const method = init?.method ?? request?.method ?? "GET";
+
+    if (!shouldUseSameOriginProxy()) {
+      return fetch(targetUrl, init ?? undefined);
+    }
+
+    const proxyUrl = new URL("/api/ollama-proxy", window.location.origin);
+    proxyUrl.searchParams.set("url", targetUrl);
+
+    const resolvedHeaders = new Headers(request?.headers ?? undefined);
+    if (init?.headers) {
+      new Headers(init.headers).forEach((value, key) => {
+        resolvedHeaders.set(key, value);
+      });
+    }
+
+    const apiKey = getApiKey();
+    const target = new URL(targetUrl);
+    const authorization =
+      resolvedHeaders.get("authorization") ?? resolvedHeaders.get("Authorization");
+
+    // Avoid relying on Authorization on the request to our own Vercel function.
+    // Some hosting/auth layers treat that header specially before the function sees it.
+    if (target.protocol === "https:" && target.hostname === "ollama.com") {
+      const upstreamAuthorization =
+        authorization ?? (apiKey ? `Bearer ${apiKey}` : null);
+
+      if (upstreamAuthorization) {
+        resolvedHeaders.set("x-ollama-authorization", upstreamAuthorization);
+      }
+
+      resolvedHeaders.delete("authorization");
+      resolvedHeaders.delete("Authorization");
+    }
+
+    let body: BodyInit | undefined;
+    if (method !== "GET" && method !== "HEAD") {
+      if (init?.body !== undefined) {
+        body = init.body ?? undefined;
+      } else if (request) {
+        body = await request.clone().arrayBuffer();
+      }
+    }
+
+    return fetch(proxyUrl.toString(), {
+      method,
+      headers: resolvedHeaders,
+      body,
+      signal: init?.signal ?? request?.signal,
+      redirect: "manual",
+    });
+  };
+}
 
 function uint8ArrayToBase64(uint8Array: Uint8Array): string {
   const chunkSize = 0x8000;
@@ -60,6 +176,12 @@ function base64ToText(base64: string): string {
 }
 
 function getStoredChats(): Map<string, any> {
+  if (
+    typeof localStorage === "undefined" ||
+    typeof localStorage.getItem !== "function"
+  ) {
+    return new Map();
+  }
   const stored = localStorage.getItem(CHATS_STORAGE_KEY);
   if (!stored) return new Map();
   try {
@@ -70,6 +192,12 @@ function getStoredChats(): Map<string, any> {
 }
 
 function saveChats(chats: Map<string, any>): void {
+  if (
+    typeof localStorage === "undefined" ||
+    typeof localStorage.setItem !== "function"
+  ) {
+    return;
+  }
   localStorage.setItem(CHATS_STORAGE_KEY, JSON.stringify(Object.fromEntries(chats)));
 }
 
@@ -94,6 +222,12 @@ function getDefaultSettings(): Settings {
 }
 
 function getStoredSettings(): Settings {
+  if (
+    typeof localStorage === "undefined" ||
+    typeof localStorage.getItem !== "function"
+  ) {
+    return getDefaultSettings();
+  }
   const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
   if (!stored) return getDefaultSettings();
   try {
@@ -104,6 +238,12 @@ function getStoredSettings(): Settings {
 }
 
 function saveSettings(settings: Settings): void {
+  if (
+    typeof localStorage === "undefined" ||
+    typeof localStorage.setItem !== "function"
+  ) {
+    return;
+  }
   localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
 }
 
@@ -111,11 +251,10 @@ function getClients() {
   const apiKey = getApiKey();
   const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
 
-  // Same Ollama client can talk to both local server (/api/*) and ollama.com tools
-  // (ollama-js hardcodes https://ollama.com for webSearch/webFetch, but still uses `headers`).
   const local = new Ollama({
     host: getOllamaHost(),
     headers,
+    fetch: createProxyFetch(),
   });
 
   return { ollama: local };
@@ -331,6 +470,15 @@ export async function* pullModel(
   completed?: number;
   done?: boolean;
 }> {
+  if (getOllamaHost().toLowerCase() === OLLAMA_CLOUD_URL) {
+    rememberPulledCloudModel(modelName);
+    yield {
+      status: "success",
+      done: true,
+    };
+    return;
+  }
+
   const { ollama } = getClients();
 
   const iteratorOrProgress = await ollama.pull({ model: modelName, stream: true, insecure: false } as any);
@@ -350,7 +498,10 @@ export async function* pullModel(
       completed: part.completed,
       done: isDone,
     };
-    if (isDone) break;
+    if (isDone) {
+      rememberPulledCloudModel(modelName);
+      break;
+    }
   }
 }
 
@@ -377,6 +528,7 @@ export async function fetchHealth(): Promise<boolean> {
 export async function getModels(query?: string): Promise<Model[]> {
   const { ollama } = getClients();
   const data = await ollama.list();
+  const pulledCloudModels = getStoredPulledCloudModels();
 
   let models: Model[] = (data.models || [])
     .filter((m: any) => {
@@ -396,12 +548,49 @@ export async function getModels(query?: string): Promise<Model[]> {
       });
     });
 
+  for (const modelName of pulledCloudModels) {
+    if (!models.some((model) => model.model === modelName)) {
+      models.push(new Model({ model: modelName }));
+    }
+  }
+
   if (query) {
     const normalizedQuery = query.toLowerCase().trim();
     models = models.filter((m: Model) => m.model.toLowerCase().includes(normalizedQuery));
   }
 
   return models;
+}
+
+export async function searchCloudCatalog(query: string): Promise<Model[]> {
+  const normalizedQuery = query.toLowerCase().trim();
+  if (!normalizedQuery) return [];
+
+  const proxyFetch = createProxyFetch();
+  const res = await proxyFetch(`${OLLAMA_CLOUD_URL}/api/tags`, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      ...(getApiKey() ? { Authorization: `Bearer ${getApiKey()}` } : {}),
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Cloud catalog request failed (${res.status})`);
+  }
+
+  const data = await res.json();
+  const seen = new Set<string>();
+
+  return (data.models || [])
+    .map((model: any) => String(model.name || "").replace(/:latest$/, ""))
+    .filter((modelName: string) => modelName.toLowerCase().includes(normalizedQuery))
+    .filter((modelName: string) => {
+      if (!modelName || seen.has(modelName)) return false;
+      seen.add(modelName);
+      return true;
+    })
+    .map((modelName: string) => new Model({ model: modelName }));
 }
 
 export async function getModelCapabilities(
@@ -449,41 +638,88 @@ function buildDateContextSystemMessage(): OllamaMessage {
   return { role: "system", content } as OllamaMessage;
 }
 
-function buildWebSearchTools(): OllamaTool[] {
-  return [
-    {
+function buildTools(options: {
+  enableWebSearch: boolean;
+  enableCodeInterpreter: boolean;
+}): OllamaTool[] | undefined {
+  const tools: OllamaTool[] = [];
+
+  if (options.enableWebSearch) {
+    tools.push(
+      {
+        type: "function",
+        function: {
+          name: "webSearch",
+          description: "Performs a web search for the given query.",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string", description: "Search query string." },
+              max_results: {
+                type: "number",
+                description:
+                  "The maximum number of results to return per query (default 5; clamped).",
+              },
+            },
+            required: ["query"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "webFetch",
+          description: "Fetches a single page by URL.",
+          parameters: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "A single URL to fetch." },
+            },
+            required: ["url"],
+          },
+        },
+      },
+    );
+  }
+
+  if (options.enableCodeInterpreter) {
+    tools.push({
       type: "function",
       function: {
-        name: "webSearch",
-        description: "Performs a web search for the given query.",
+        name: "codeInterpreter",
+        description:
+          "Runs shell commands inside a temporary Vercel Sandbox. Use action=create_session first, then reuse session_name for follow-up commands. Supports Python, Node.js, npm, bun, archives, and filesystem work.",
         parameters: {
           type: "object",
           properties: {
-            query: { type: "string", description: "Search query string." },
-            max_results: {
+            action: {
+              type: "string",
+              enum: ["create_session", "run_command", "stop_session"],
+            },
+            session_name: {
+              type: "string",
+              description: "Existing sandbox session name returned by the tool.",
+            },
+            command: {
+              type: "string",
+              description: "Shell command to run with bash -lc when action is run_command.",
+            },
+            cwd: {
+              type: "string",
+              description: "Optional working directory inside the sandbox.",
+            },
+            timeout_ms: {
               type: "number",
-              description: "The maximum number of results to return per query (default 5; clamped).",
+              description: "Optional command timeout in milliseconds.",
             },
           },
-          required: ["query"],
+          required: ["action"],
         },
       },
-    },
-    {
-      type: "function",
-      function: {
-        name: "webFetch",
-        description: "Fetches a single page by URL.",
-        parameters: {
-          type: "object",
-          properties: {
-            url: { type: "string", description: "A single URL to fetch." },
-          },
-          required: ["url"],
-        },
-      },
-    },
-  ] as any;
+    });
+  }
+
+  return tools.length > 0 ? (tools as any) : undefined;
 }
 
 function deltaFrom(acc: string, next: string) {
@@ -492,151 +728,32 @@ function deltaFrom(acc: string, next: string) {
   return next;
 }
 
-function getOllamaDotComApiBase(): string {
-  const proxy = getCorsProxyUrl();
-  if (proxy) {
-    const cleaned = proxy.replace(/\/+$/, "");
-    return cleaned.endsWith("/proxy") ? cleaned : `${cleaned}/proxy`;
-  }
-  return `${getOllamaDotComUrl().replace(/\/+$/, "")}/api`;
-}
-
-function toAbsoluteUrlMaybe(relativeOrAbsolute: string): string {
-  if (!relativeOrAbsolute) return relativeOrAbsolute;
-  const trimmed = relativeOrAbsolute.trim();
-  if (!trimmed) return trimmed;
-  if (trimmed.startsWith("/") && typeof window !== "undefined") {
-    try {
-      return new URL(trimmed, window.location.origin).toString();
-    } catch {
-      return trimmed;
-    }
-  }
-  return trimmed;
-}
-
-type OllamaChatPart = {
-  message?: {
-    content?: string;
-    thinking?: string;
-    tool_calls?: OllamaToolCall[];
-  };
-  done?: boolean;
-};
-
-function chatStreamViaFetch(args: {
-  url: string;
-  body: unknown;
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}): AsyncIterable<OllamaChatPart> & { abort: () => void } {
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-
-  const signal = args.signal
-    ? (() => {
-        if (args.signal.aborted) controller.abort();
-        else args.signal.addEventListener("abort", abort, { once: true });
-        return controller.signal;
-      })()
-    : controller.signal;
-
-  const iterable: AsyncIterable<OllamaChatPart> = {
-    [Symbol.asyncIterator]() {
-      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-      let buffer = "";
-      const decoder = new TextDecoder();
-      let started = false;
-
-      const ensureReader = async () => {
-        if (started) return;
-        started = true;
-
-        const res = await fetch(args.url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/x-ndjson, application/json",
-            ...(args.headers || {}),
-          },
-          body: JSON.stringify(args.body),
-          signal,
-        });
-
-        if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          throw new Error(`Chat failed (${res.status}): ${text || res.statusText}`);
-        }
-        if (!res.body) {
-          throw new Error("Chat failed: empty response body");
-        }
-        reader = res.body.getReader();
-      };
-
-      return {
-        async next() {
-          await ensureReader();
-          if (!reader) return { done: true, value: undefined as any };
-
-          while (true) {
-            const nl = buffer.indexOf("\n");
-            if (nl !== -1) {
-              const line = buffer.slice(0, nl).trim();
-              buffer = buffer.slice(nl + 1);
-              if (!line) continue;
-              try {
-                return { done: false, value: JSON.parse(line) as OllamaChatPart };
-              } catch {
-                continue;
-              }
-            }
-
-            const { done, value } = await reader.read();
-            if (done) {
-              const tail = buffer.trim();
-              buffer = "";
-              if (tail) {
-                try {
-                  return { done: false, value: JSON.parse(tail) as OllamaChatPart };
-                } catch {
-                  // ignore
-                }
-              }
-              return { done: true, value: undefined as any };
-            }
-            buffer += decoder.decode(value, { stream: true });
-          }
-        },
-        async return() {
-          abort();
-          return { done: true, value: undefined as any };
-        },
-      };
-    },
-  };
-
-  return Object.assign(iterable, { abort });
-}
-
-async function callOllamaDotComTool<T>(path: "web_search" | "web_fetch", body: unknown): Promise<T> {
-  const apiKey = getApiKey();
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-
-  const res = await fetch(`${getOllamaDotComApiBase()}/${path}`, {
+async function runCodeInterpreterTool(payload: {
+  action: string;
+  session_name?: string;
+  command?: string;
+  cwd?: string;
+  timeout_ms?: number;
+  chat_id: string;
+}): Promise<unknown> {
+  const res = await fetch("/api/code-interpreter", {
     method: "POST",
-    headers,
-    body: JSON.stringify(body),
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
   });
 
+  const text = await res.text();
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Tool ${path} failed (${res.status}): ${text || res.statusText}`);
+    throw new Error(text || `Code Interpreter failed (${res.status})`);
   }
 
-  return (await res.json()) as T;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { ok: true, raw: text };
+  }
 }
 
 export async function* sendMessage(
@@ -738,7 +855,11 @@ export async function* sendMessage(
   })();
 
   const toolCallsEnabled = Boolean(_webSearch) && Boolean(getApiKey());
-  let tools = toolCallsEnabled ? buildWebSearchTools() : undefined;
+  const codeInterpreterEnabled = Boolean(_fileTools);
+  let tools = buildTools({
+    enableWebSearch: toolCallsEnabled,
+    enableCodeInterpreter: codeInterpreterEnabled,
+  });
   const think = thinkingLevelParam(_think);
 
   let toolLimitSystemNote: string | null = null;
@@ -767,11 +888,13 @@ export async function* sendMessage(
     const MAX_TOOL_CALLS_TOTAL = 10;
     const MAX_WEB_SEARCH_CALLS = 6;
     const MAX_WEB_FETCH_CALLS = 6;
+    const MAX_CODE_INTERPRETER_CALLS = 8;
 
     let toolLoopCount = 0;
     let toolCallsTotal = 0;
     let webSearchCalls = 0;
     let webFetchCalls = 0;
+    let codeInterpreterCalls = 0;
 
     while (true) {
       toolLoopCount += 1;
@@ -795,17 +918,7 @@ export async function* sendMessage(
         } as any,
       } as any;
 
-      const apiKey = getApiKey();
-      const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
-
-      const responseStream = model.isCloud()
-        ? (chatStreamViaFetch({
-            url: `${toAbsoluteUrlMaybe(getOllamaDotComApiBase())}/chat`,
-            body: localRequest,
-            headers,
-            signal,
-          }) as any)
-        : ((await ollama.chat(localRequest)) as any);
+      const responseStream = (await ollama.chat(localRequest)) as any;
 
       if (signal) {
         const abort = () => responseStream.abort();
@@ -953,14 +1066,11 @@ export async function* sendMessage(
 
             let toolResultText = "";
             try {
-              const web = await callOllamaDotComTool<any>("web_search", { query, max_results });
+              const web = await ollama.webSearch({ query, maxResults: max_results } as any);
               toolResultText = JSON.stringify(web).slice(0, 8000);
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
-              const hint = msg.includes("Failed to fetch")
-                ? " (CORS: set a CORS proxy in Settings → CORS Proxy (for web search))"
-                : "";
-              toolResultText = `ERROR: ${msg}${hint}`;
+              toolResultText = `ERROR: ${msg}`;
             }
 
             chat.messages.push({
@@ -1000,14 +1110,68 @@ export async function* sendMessage(
             const url = typeof args?.url === "string" ? args.url : "";
             let toolResultText = "";
             try {
-              const web = await callOllamaDotComTool<any>("web_fetch", { url });
+              const web = await ollama.webFetch({ url });
               toolResultText = JSON.stringify(web).slice(0, 8000);
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
-              const hint = msg.includes("Failed to fetch")
-                ? " (CORS: set a CORS proxy in Settings → CORS Proxy (for web search))"
-                : "";
-              toolResultText = `ERROR: ${msg}${hint}`;
+              toolResultText = `ERROR: ${msg}`;
+            }
+
+            chat.messages.push({
+              role: "tool",
+              content: toolResultText,
+              tool_name: toolName,
+              created_at: nowIso(),
+              updated_at: nowIso(),
+            });
+
+            yield new ChatEvent({
+              eventName: "tool_result",
+              content: toolResultText,
+              toolName,
+            });
+          } else if (
+            toolName === "codeInterpreter" ||
+            toolName === "code_interpreter"
+          ) {
+            codeInterpreterCalls += 1;
+            if (codeInterpreterCalls > MAX_CODE_INTERPRETER_CALLS) {
+              const toolResultText =
+                `ERROR: codeInterpreter limit reached (max ${MAX_CODE_INTERPRETER_CALLS}). ` +
+                `Continue without more sandbox actions and answer with what you have.`;
+              chat.messages.push({
+                role: "tool",
+                content: toolResultText,
+                tool_name: toolName,
+                created_at: nowIso(),
+                updated_at: nowIso(),
+              });
+              yield new ChatEvent({
+                eventName: "tool_result",
+                content: toolResultText,
+                toolName,
+              });
+              continue;
+            }
+
+            let toolResultText = "";
+            try {
+              const result = await runCodeInterpreterTool({
+                action: String(args?.action || ""),
+                session_name:
+                  typeof args?.session_name === "string"
+                    ? args.session_name
+                    : undefined,
+                command:
+                  typeof args?.command === "string" ? args.command : undefined,
+                cwd: typeof args?.cwd === "string" ? args.cwd : undefined,
+                timeout_ms: clampInt(args?.timeout_ms, 1_000, 120_000, 30_000),
+                chat_id: actualChatId,
+              });
+              toolResultText = JSON.stringify(result).slice(0, 12000);
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              toolResultText = `ERROR: ${msg}`;
             }
 
             chat.messages.push({
@@ -1084,4 +1248,3 @@ export async function* sendMessage(
 function toolCallsToGotypes(toolCalls: OllamaToolCall[]): ToolCall[] {
   return toolCallToGotypes(toolCalls);
 }
-

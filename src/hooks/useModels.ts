@@ -1,12 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Model } from "@/gotypes";
-import { getModels } from "@/api";
+import { getModels, searchCloudCatalog } from "@/api";
 import { mergeModels } from "@/utils/mergeModels";
 import { useMemo } from "react";
-import { useCloudStatus } from "./useCloudStatus";
 
 export function useModels(searchQuery = "") {
-  const { cloudDisabled } = useCloudStatus();
   const localQuery = useQuery<Model[], Error>({
     queryKey: ["models", searchQuery],
     queryFn: () => getModels(searchQuery),
@@ -19,12 +17,23 @@ export function useModels(searchQuery = "") {
     refetchIntervalInBackground: true,
   });
 
+  const catalogQuery = useQuery<Model[], Error>({
+    queryKey: ["cloudCatalog", searchQuery],
+    queryFn: () => searchCloudCatalog(searchQuery),
+    enabled: searchQuery.trim().length > 1,
+    staleTime: 5 * 60 * 1000,
+    retry: 2,
+  });
+
   const allModels = useMemo(() => {
-    const models = mergeModels(localQuery.data || [], cloudDisabled);
+    const models = mergeModels(localQuery.data || []);
+    const catalogModels = catalogQuery.data || [];
+    const mergedSearchResults =
+      searchQuery.trim().length > 0 ? [...models, ...catalogModels] : models;
 
     if (searchQuery && searchQuery.trim()) {
       const query = searchQuery.toLowerCase().trim();
-      const filteredModels = models.filter((model) =>
+      const filteredModels = mergedSearchResults.filter((model) =>
         model.model.toLowerCase().includes(query),
       );
 
@@ -39,13 +48,13 @@ export function useModels(searchQuery = "") {
       });
     }
 
-    return models;
-  }, [localQuery.data, searchQuery, cloudDisabled]);
+    return mergedSearchResults;
+  }, [catalogQuery.data, localQuery.data, searchQuery]);
 
   return {
     ...localQuery,
     data: allModels,
-    isLoading: localQuery.isLoading,
+    isLoading: localQuery.isLoading || catalogQuery.isLoading,
   };
 }
 

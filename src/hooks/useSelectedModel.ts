@@ -3,12 +3,10 @@ import { useModels } from "./useModels";
 import { useChat } from "./useChats";
 import { useSettings } from "./useSettings.ts";
 import { Model } from "@/gotypes";
-import { useCloudStatus } from "./useCloudStatus";
 
 export function useSelectedModel(currentChatId?: string, searchQuery?: string) {
   const { settings, setSettings } = useSettings();
   const { data: models = [], isLoading } = useModels(searchQuery || "");
-  const { cloudDisabled } = useCloudStatus();
   const { data: chatData, isLoading: isChatLoading } = useChat(
     currentChatId && currentChatId !== "new" ? currentChatId : "",
   );
@@ -16,37 +14,12 @@ export function useSelectedModel(currentChatId?: string, searchQuery?: string) {
   const restoredChatRef = useRef<string | null>(null);
 
   const selectedModel: Model | null = useMemo(() => {
-    if (cloudDisabled && settings.selectedModel?.endsWith("cloud")) {
-      return (
-        models.find((m) => !m.isCloud()) ||
-        models[0] ||
-        null
-      );
-    }
-
     return (
       models.find((m) => m.model === settings.selectedModel) ||
       models[0] ||
       null
     );
-  }, [models, settings.selectedModel, cloudDisabled]);
-
-  useEffect(() => {
-    if (!selectedModel) return;
-
-    if (
-      cloudDisabled &&
-      settings.selectedModel?.endsWith("cloud") &&
-      selectedModel.model !== settings.selectedModel
-    ) {
-      setSettings({ SelectedModel: selectedModel.model });
-    }
-  }, [
-    selectedModel,
-    cloudDisabled,
-    settings.selectedModel,
-    setSettings,
-  ]);
+  }, [models, settings.selectedModel]);
 
   useEffect(() => {
     if (!currentChatId || currentChatId === "new") {
@@ -87,9 +60,6 @@ export function useSelectedModel(currentChatId?: string, searchQuery?: string) {
     }
 
     const defaultModel =
-      (cloudDisabled
-        ? models.find((m) => !m.isCloud())
-        : models[0]) ||
       models[0];
 
     if (defaultModel) {
@@ -99,7 +69,6 @@ export function useSelectedModel(currentChatId?: string, searchQuery?: string) {
     isLoading,
     models.length,
     settings.selectedModel,
-    cloudDisabled,
     models,
     setSettings,
   ]);

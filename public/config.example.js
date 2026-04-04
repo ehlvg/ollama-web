@@ -3,13 +3,9 @@
 //
 // Notes:
 // - User changes in Settings (localStorage) override this.
-// - `ollamaHost` can be a relative URL like "/ollama" when you reverse-proxy Ollama behind the same domain.
-// - `corsProxyUrl` should typically be "/proxy" when you run the included CORS proxy container.
+// - `ollamaHost` can point to Ollama Cloud or any public Ollama endpoint.
 //
 // eslint-disable-next-line no-undef
 window.__OLLAMA_WEB_CONFIG__ = {
-  ollamaHost: "/ollama",
-  corsProxyUrl: "/proxy",
-  ollamaDotComUrl: "https://ollama.com",
+  ollamaHost: "https://ollama.com",
 };
-

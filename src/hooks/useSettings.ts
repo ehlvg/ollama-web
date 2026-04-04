@@ -6,6 +6,7 @@ import { useMemo, useCallback } from "react";
 // TODO(hoyyeva): remove turboEnabled when we remove Migration logic in useSelectedModel.ts
 interface SettingsState {
   turboEnabled: boolean;
+  toolsEnabled: boolean;
   webSearchEnabled: boolean;
   selectedModel: string;
   sidebarOpen: boolean;
@@ -16,6 +17,7 @@ interface SettingsState {
 // Type for partial settings updates
 type SettingsUpdate = Partial<{
   TurboEnabled: boolean;
+  Tools: boolean;
   WebSearchEnabled: boolean;
   ThinkEnabled: boolean;
   ThinkLevel: string;
@@ -45,6 +47,7 @@ export function useSettings() {
   const settings: SettingsState = useMemo(
     () => ({
       turboEnabled: settingsData?.settings?.TurboEnabled ?? false,
+      toolsEnabled: settingsData?.settings?.Tools ?? false,
       webSearchEnabled: settingsData?.settings?.WebSearchEnabled ?? false,
       thinkEnabled: settingsData?.settings?.ThinkEnabled ?? false,
       thinkLevel: settingsData?.settings?.ThinkLevel ?? "none",

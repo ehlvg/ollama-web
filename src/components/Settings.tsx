@@ -1,5 +1,4 @@
 import { useEffect, useState, useCallback } from "react";
-import { Switch } from "@/components/ui/switch";
 import { Text } from "@/components/ui/text";
 import { Input } from "@/components/ui/input";
 import { Field, Label, Description } from "@/components/ui/fieldset";
@@ -10,7 +9,6 @@ import { useTheme, type ThemeMode } from "@/hooks/useTheme";
 import {
   ServerIcon,
   KeyIcon,
-  CloudIcon,
   XMarkIcon,
   ArrowLeftIcon,
   CheckCircleIcon,
@@ -30,8 +28,6 @@ import {
   setOllamaHost,
   getApiKey,
   setApiKey,
-  getCorsProxyUrl,
-  setCorsProxyUrl,
 } from "@/lib/web-config";
 
 export default function Settings() {
@@ -42,7 +38,6 @@ export default function Settings() {
 
   const [ollamaHost, setOllamaHostState] = useState(getOllamaHost);
   const [apiKeyValue, setApiKeyValue] = useState(getApiKey() || "");
-  const [corsProxyValue, setCorsProxyValue] = useState(getCorsProxyUrl() || "");
   const [connectionStatus, setConnectionStatus] = useState<
     "checking" | "connected" | "disconnected" | null
   >(null);
@@ -110,12 +105,6 @@ export default function Settings() {
 
   const handleSaveApiKey = () => {
     setApiKey(apiKeyValue || null);
-    setShowSaved(true);
-    setTimeout(() => setShowSaved(false), 1500);
-  };
-
-  const handleSaveCorsProxy = () => {
-    setCorsProxyUrl(corsProxyValue || null);
     setShowSaved(true);
     setTimeout(() => setShowSaved(false), 1500);
   };
@@ -217,13 +206,13 @@ export default function Settings() {
                   <div className="w-full">
                     <Label>Ollama Server</Label>
                     <Description>
-                      Address of your Ollama server (default: http://127.0.0.1:11434)
+                      Cloud-first endpoint for Ollama. Default: https://ollama.com
                     </Description>
                     <div className="mt-2 flex items-center space-x-2">
                       <Input
                         value={ollamaHost}
                         onChange={(e) => setOllamaHostState(e.target.value)}
-                        placeholder="http://127.0.0.1:11434"
+                        placeholder="https://ollama.com"
                         className="flex-1"
                       />
                       <Button type="button" color="white" onClick={handleSaveHost}>
@@ -271,14 +260,14 @@ export default function Settings() {
                   <div className="w-full">
                     <Label>API Key (optional)</Label>
                     <Description>
-                      For cloud models or servers requiring authentication
+                      Used for Ollama Cloud or any protected Ollama endpoint.
                     </Description>
                     <div className="mt-2 flex items-center space-x-2">
                       <Input
                         type="password"
                         value={apiKeyValue}
                         onChange={(e) => setApiKeyValue(e.target.value)}
-                        placeholder="Leave empty for local Ollama"
+                        placeholder="ollama_..."
                         className="flex-1"
                       />
                       <Button
@@ -289,63 +278,6 @@ export default function Settings() {
                         Save
                       </Button>
                     </div>
-                  </div>
-                </div>
-              </Field>
-            </div>
-          </div>
-
-          {/* CORS Proxy */}
-          <div className="overflow-hidden rounded-xl bg-white dark:bg-neutral-800">
-            <div className="p-4">
-              <Field>
-                <div className="flex items-start space-x-3">
-                  <CloudIcon className="mt-1 h-5 w-5 flex-shrink-0 text-black dark:text-neutral-100" />
-                  <div className="w-full">
-                    <Label>CORS Proxy (for web search)</Label>
-                    <Description>
-                      For local proxy: http://localhost:8080/proxy. Run: npx local-cors-proxy --proxyUrl https://ollama.com/api/ --port 8080
-                    </Description>
-                    <div className="mt-2 flex items-center space-x-2">
-                      <Input
-                        value={corsProxyValue}
-                        onChange={(e) => setCorsProxyValue(e.target.value)}
-                        placeholder="http://localhost:8080/proxy"
-                        className="flex-1"
-                      />
-                      <Button
-                        type="button"
-                        color="white"
-                        onClick={handleSaveCorsProxy}
-                      >
-                        Save
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </Field>
-            </div>
-          </div>
-
-          {/* Cloud Models */}
-          <div className="overflow-hidden rounded-xl bg-white dark:bg-neutral-800">
-            <div className="p-4">
-              <Field>
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-start space-x-3 flex-1">
-                    <CloudIcon className="mt-1 h-5 w-5 flex-shrink-0 text-black dark:text-neutral-100" />
-                    <div>
-                      <Label>Enable Cloud Models</Label>
-                      <Description>
-                        Enable this if using ollama.com cloud models with API key
-                      </Description>
-                    </div>
-                  </div>
-                  <div className="flex-shrink-0">
-                    <Switch
-                      checked={settings.TurboEnabled}
-                      onChange={(checked) => handleChange("TurboEnabled", checked)}
-                    />
                   </div>
                 </div>
               </Field>
